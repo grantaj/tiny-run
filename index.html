@@ -39,7 +39,8 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   const THROTTLE_TURN_FACTOR=.68;
   const LIFT_TURN_FACTOR=1.15;
   const ENTRY_TURN_FACTOR=.42;
-  const STEER_RESPONSE=.075;
+  const THROTTLE_STEER_RESPONSE=.075;
+  const LIFT_STEER_RESPONSE=.025;
   const STRAIGHT_CENTER_RATE=20;
 
   const ROAD_CURVE_SCALE=.00155;
@@ -175,8 +176,11 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     const preview=entryCurve(distance);
     curveDrift=-curve*speed*CURVE_DRIFT_GAIN;
 
-    const lowSpeedScale=clamp(speed/110,.55,1);
-    const steerLimit=(pressed?THROTTLE_STEER_RATE:LIFT_STEER_RATE)*lowSpeedScale;
+    // Power loses some steering authority at very low speed, but lifting always
+    // gets the full corrective rack. Slowing down must never make the car harder
+    // to turn when the player is explicitly asking it to turn in.
+    const throttleScale=clamp(speed/110,.55,1);
+    const steerLimit=pressed?THROTTLE_STEER_RATE*throttleScale:LIFT_STEER_RATE;
 
     let desiredSteer;
     const inCorner=Math.abs(curve)>.06;
@@ -196,9 +200,11 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
       desiredSteer=clamp(-lateral*.26,-STRAIGHT_CENTER_RATE,STRAIGHT_CENTER_RATE);
     }
 
-    // Very short rack response for continuity, without adding a second vehicle
-    // dynamics system.
-    steerRate+=(desiredSteer-steerRate)*(1-Math.exp(-dt/STEER_RESPONSE));
+    // Lifting must feel like an immediate steering command: fast rack response
+    // on lift, slower response under power so acceleration still opens the line
+    // progressively rather than snapping the car straight.
+    const steerResponse=pressed?THROTTLE_STEER_RESPONSE:LIFT_STEER_RESPONSE;
+    steerRate+=(desiredSteer-steerRate)*(1-Math.exp(-dt/steerResponse));
     steerFraction=LIFT_STEER_RATE>0?steerRate/LIFT_STEER_RATE:0;
 
     const netLateralRate=curveDrift+steerRate;
