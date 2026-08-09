@@ -31,7 +31,14 @@
   const WHEELBASE=18;
   const MAX_LAT_ACCEL=62;
   const STEER_LIMIT=.42;
-  const YAW_RESPONSE=.16;
+
+  // The automatic driver is a deliberately overdamped second-order tracker in
+  // road-relative coordinates. TRACK_OMEGA sets how quickly it recentres;
+  // TRACK_DAMPING > 1 prevents the self-excited left/right weave of the earlier
+  // ad-hoc steering controller. Tyre grip still limits the achievable yaw rate.
+  const TRACK_OMEGA=1.5;
+  const TRACK_DAMPING=1.35;
+  const YAW_RESPONSE=.055;
 
   // A deliberately short camera depth gives strong optic flow. At maximum speed
   // the visible road is only a few seconds long, closer to the feel of old arcade racers.
@@ -42,7 +49,7 @@
   let pressed=false,started=false,gameOver=false;
   let startCharging=false,startCharge=0;
   let speed=86,distance=0,score=0,best=+(localStorage.tinyRunBest||0);
-  let lateral=0,headingError=0,yawRate=0,steer=0;
+  let lateral=0,headingError=0,yawRate=0;
   let shake=0,nextCheckpoint=CHECKPOINT_SPACING;
   let roadPoints=[];
 
@@ -100,7 +107,7 @@
 
   function reset(){
     pressed=false;started=false;gameOver=false;startCharging=false;startCharge=0;
-    speed=86;distance=0;score=0;lateral=0;headingError=0;yawRate=0;steer=0;
+    speed=86;distance=0;score=0;lateral=0;headingError=0;yawRate=0;
     shake=0;nextCheckpoint=CHECKPOINT_SPACING;
   }
 
@@ -153,8 +160,7 @@
       return;
     }
 
-    // Press = throttle. Releasing is now genuinely coasting: rolling/aero drag only.
-    // Speed therefore persists into a corner and a late lift cannot magically save it.
+    // Press = throttle. Releasing is genuinely coasting: rolling/aero drag only.
     let accel;
     if(pressed){
       accel=122*(1-speed/MAX_SPEED)-5-.000045*speed*speed;
@@ -163,29 +169,39 @@
     }
     speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
 
-    // Curvature feed-forward does most of the steering. Corrections are intentionally
-    // modest so the virtual driver does not oscillate or over-turn gentle bends.
-    const look=28+speed*.13;
-    const kRef=.78*roadCurvature(distance+look*.22)+.22*roadCurvature(distance+look);
-    const feedForward=Math.atan(WHEELBASE*kRef);
-    const correction=-.72*headingError-Math.atan(.0017*lateral);
-    const steerCmd=clamp(feedForward+correction,-STEER_LIMIT,STEER_LIMIT);
-
-    steer+=(steerCmd-steer)*(1-Math.exp(-dt/.11));
-    const commandedCurvature=Math.tan(steer)/WHEELBASE;
-    const maxCarCurvature=MAX_LAT_ACCEL/Math.max(speed*speed,1);
-    const carCurvature=clamp(commandedCurvature,-maxCarCurvature,maxCarCurvature);
-    const targetYawRate=speed*carCurvature;
-    yawRate+=(targetYawRate-yawRate)*(1-Math.exp(-dt/YAW_RESPONSE));
-
     const kRoad=roadCurvature(distance);
     const denom=Math.max(.70,1-kRoad*lateral);
     const forward=speed*Math.cos(headingError)/denom;
+    const roadYaw=kRoad*forward;
+
+    // For small road-relative errors, lateral dynamics are approximately
+    //   e'' + 2*zeta*omega*e' + omega^2*e = 0.
+    // Using an overdamped zeta makes recovery monotonic instead of oscillatory.
+    // Road yaw is pure feed-forward; the two correction terms only remove error.
+    const correctionYaw=
+      -2*TRACK_DAMPING*TRACK_OMEGA*headingError
+      -(TRACK_OMEGA*TRACK_OMEGA)*lateral/Math.max(speed,45);
+    const desiredYaw=roadYaw+correctionYaw;
+
+    // Two physical limits: steering geometry at low speed and tyre lateral grip
+    // at high speed. When grip saturates in a fast bend, the car understeers wide.
+    const maxSteerYaw=speed*Math.tan(STEER_LIMIT)/WHEELBASE;
+    const maxGripYaw=MAX_LAT_ACCEL/Math.max(speed,45);
+    const maxYaw=Math.min(maxSteerYaw,maxGripYaw);
+    const targetYaw=clamp(desiredYaw,-maxYaw,maxYaw);
+    yawRate+=(targetYaw-yawRate)*(1-Math.exp(-dt/YAW_RESPONSE));
+
     lateral+=speed*Math.sin(headingError)*dt;
-    headingError+=(yawRate-kRoad*forward)*dt;
+    headingError+=(yawRate-roadYaw)*dt;
     headingError=clamp(headingError,-.85,.85);
     distance+=Math.max(0,forward)*dt;
     score+=Math.max(0,forward)*dt*.10;
+
+    // Kill microscopic numerical residue on a straight so it can never grow into
+    // visible hunting by itself.
+    if(Math.abs(kRoad)<1e-6&&Math.abs(lateral)<.04&&Math.abs(headingError)<.0004&&Math.abs(yawRate)<.002){
+      lateral=0;headingError=0;yawRate=0;
+    }
 
     if(Math.abs(lateral)>=ROAD_HALF-CAR_HALF){crash();return;}
 
