@@ -55,11 +55,11 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   const CHECKPOINT_TIME=6.6;
   const MAX_TIME=8.6;
 
-  // Leaving the kerbs slowly is a recoverable excursion. Doing it at high speed
-  // becomes a proper crash/spin and burns most of a checkpoint's spare time.
+  // Most off-road departures should be recoverable slowdowns. Only genuinely
+  // flat-out departures trigger the spectacular spin/crash.
   const OFFROAD_RECOVERY=.65;
   const OFFROAD_SPEED=76;
-  const CRASH_SPEED=190;
+  const CRASH_SPEED=250;
   const CRASH_RECOVERY=3.0;
 
   let pressed=false,started=false,gameOver=false;
@@ -454,35 +454,42 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   function drawTimer(){
     if(!started||gameOver)return;
     const frac=clamp(timeLeft/MAX_TIME,0,1);
-    const barW=clamp(W*.48,190,340),barH=7;
-    const x=W*.5-barW*.5,y=12;
+    const hudY=30;
+    const barY=hudY+19;
+    const barW=clamp(W*.36,130,240),barH=6;
+    const x=W*.5-barW*.5;
     const urgent=timeLeft<2.5;
     const pulse=.72+.28*Math.sin(performance.now()*.020);
 
-    ctx.fillStyle='rgba(3,7,14,.42)';ctx.fillRect(x-3,y-3,barW+6,barH+6);
-    ctx.strokeStyle='rgba(255,255,255,.46)';ctx.lineWidth=1;ctx.strokeRect(x,y,barW,barH);
-    ctx.fillStyle=urgent?`rgba(255,91,84,${pulse})`:'#ffd77a';
-    ctx.fillRect(x+1,y+1,(barW-2)*frac,barH-2);
+    // A protected top strip keeps the complete HUD clear of mobile/browser edges.
+    ctx.fillStyle='rgba(3,7,14,.48)';ctx.fillRect(0,hudY-7,W,38);
 
-    ctx.font='800 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.textBaseline='top';
-    ctx.textAlign='center';
-    ctx.fillStyle=urgent?`rgba(255,255,255,${pulse})`:'rgba(255,255,255,.88)';
-    ctx.fillText(`TIME ${Math.ceil(timeLeft)}`,W*.5,y+12);
+    ctx.font='800 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+    ctx.textBaseline='middle';
+    ctx.fillStyle='rgba(255,255,255,.94)';
 
-    // Speed, time and score form the minimal arcade HUD.
     ctx.textAlign='left';
-    ctx.fillStyle='rgba(255,255,255,.90)';
-    ctx.fillText(`${Math.round(speed).toString().padStart(3,'0')} KM/H`,12,11);
+    ctx.fillText(`${Math.round(speed).toString().padStart(3,'0')} KM/H`,14,hudY);
+
+    ctx.textAlign='center';
+    ctx.fillStyle=urgent?`rgba(255,255,255,${pulse})`:'rgba(255,255,255,.94)';
+    ctx.fillText(`TIME ${Math.ceil(timeLeft)}`,W*.5,hudY);
 
     ctx.textAlign='right';
-    ctx.fillText(`SCORE ${Math.floor(score).toString().padStart(6,'0')}`,W-12,11);
+    ctx.fillStyle='rgba(255,255,255,.94)';
+    ctx.fillText(`SCORE ${Math.floor(score).toString().padStart(6,'0')}`,W-14,hudY);
+
+    ctx.fillStyle='rgba(3,7,14,.50)';ctx.fillRect(x-2,barY-2,barW+4,barH+4);
+    ctx.strokeStyle='rgba(255,255,255,.46)';ctx.lineWidth=1;ctx.strokeRect(x,barY,barW,barH);
+    ctx.fillStyle=urgent?`rgba(255,91,84,${pulse})`:'#ffd77a';
+    ctx.fillRect(x+1,barY+1,(barW-2)*frac,barH-2);
 
     if(checkpointFlash>0){
       ctx.textAlign='center';
+      ctx.textBaseline='top';
       ctx.font='900 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
       ctx.fillStyle=`rgba(255,225,125,${checkpointFlash})`;
-      ctx.fillText(`CHECKPOINT  +${CHECKPOINT_TIME}`,W*.5,y+29);
+      ctx.fillText(`CHECKPOINT  +${CHECKPOINT_TIME}`,W*.5,barY+12);
     }
     ctx.textBaseline='alphabetic';ctx.textAlign='left';
   }
