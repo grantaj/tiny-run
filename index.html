@@ -32,13 +32,14 @@
   const MAX_LAT_ACCEL=62;
   const STEER_LIMIT=.42;
 
-  // The automatic driver is a deliberately overdamped second-order tracker in
-  // road-relative coordinates. TRACK_OMEGA sets how quickly it recentres;
-  // TRACK_DAMPING > 1 prevents the self-excited left/right weave of the earlier
-  // ad-hoc steering controller. Tyre grip still limits the achievable yaw rate.
-  const TRACK_OMEGA=1.5;
-  const TRACK_DAMPING=1.35;
-  const YAW_RESPONSE=.055;
+  // The virtual driver asks for the road's own yaw first, then makes a small
+  // road-relative correction. In a real bend the requested yaw is never allowed
+  // to reverse sign: too much speed can only produce understeer, not a bizarre
+  // counter-steer into the opposite direction.
+  const HEADING_RECOVERY=2.4;
+  const OFFSET_RECOVERY=.55;
+  const YAW_RESPONSE=.035;
+  const BEND_EPS=.00003;
 
   // A deliberately short camera depth gives strong optic flow. At maximum speed
   // the visible road is only a few seconds long, closer to the feel of old arcade racers.
@@ -174,22 +175,33 @@
     const forward=speed*Math.cos(headingError)/denom;
     const roadYaw=kRoad*forward;
 
-    // For small road-relative errors, lateral dynamics are approximately
-    //   e'' + 2*zeta*omega*e' + omega^2*e = 0.
-    // Using an overdamped zeta makes recovery monotonic instead of oscillatory.
-    // Road yaw is pure feed-forward; the two correction terms only remove error.
+    // Follow the road curvature, with a damped correction for path error.
+    // Crucially, once we are in a bend the virtual driver is not allowed to ask
+    // for yaw in the opposite direction. A fast car therefore runs wide because
+    // available yaw is insufficient, not because the controller changes its mind.
     const correctionYaw=
-      -2*TRACK_DAMPING*TRACK_OMEGA*headingError
-      -(TRACK_OMEGA*TRACK_OMEGA)*lateral/Math.max(speed,45);
+      -HEADING_RECOVERY*headingError
+      -OFFSET_RECOVERY*(lateral/ROAD_HALF);
     const desiredYaw=roadYaw+correctionYaw;
 
-    // Two physical limits: steering geometry at low speed and tyre lateral grip
-    // at high speed. When grip saturates in a fast bend, the car understeers wide.
     const maxSteerYaw=speed*Math.tan(STEER_LIMIT)/WHEELBASE;
     const maxGripYaw=MAX_LAT_ACCEL/Math.max(speed,45);
     const maxYaw=Math.min(maxSteerYaw,maxGripYaw);
-    const targetYaw=clamp(desiredYaw,-maxYaw,maxYaw);
+
+    let targetYaw;
+    if(kRoad>BEND_EPS){
+      targetYaw=clamp(desiredYaw,0,maxYaw);
+    }else if(kRoad<-BEND_EPS){
+      targetYaw=clamp(desiredYaw,-maxYaw,0);
+    }else{
+      targetYaw=clamp(desiredYaw,-maxYaw,maxYaw);
+    }
+
     yawRate+=(targetYaw-yawRate)*(1-Math.exp(-dt/YAW_RESPONSE));
+
+    // Do not carry yaw from the previous bend into a bend of the opposite sign.
+    if(kRoad>BEND_EPS&&yawRate<0)yawRate=0;
+    if(kRoad<-BEND_EPS&&yawRate>0)yawRate=0;
 
     lateral+=speed*Math.sin(headingError)*dt;
     headingError+=(yawRate-roadYaw)*dt;
@@ -197,9 +209,7 @@
     distance+=Math.max(0,forward)*dt;
     score+=Math.max(0,forward)*dt*.10;
 
-    // Kill microscopic numerical residue on a straight so it can never grow into
-    // visible hunting by itself.
-    if(Math.abs(kRoad)<1e-6&&Math.abs(lateral)<.04&&Math.abs(headingError)<.0004&&Math.abs(yawRate)<.002){
+    if(Math.abs(kRoad)<BEND_EPS&&Math.abs(lateral)<.04&&Math.abs(headingError)<.0004&&Math.abs(yawRate)<.002){
       lateral=0;headingError=0;yawRate=0;
     }
 
@@ -329,7 +339,6 @@
       ctx.lineTo(b.x+b.width*.50,b.y);ctx.lineTo(b.x-b.width*.50,b.y);ctx.fill();
     }
 
-    // Dense centre markings are one of the strongest speed cues in a low-detail racer.
     const dashPeriod=56,dashLen=25;
     let z=Math.ceil(distance/dashPeriod)*dashPeriod;
     for(;z<distance+DRAW_DIST;z+=dashPeriod){
@@ -342,8 +351,6 @@
       ctx.lineTo(b.x+wb,b.y);ctx.lineTo(b.x-wb,b.y);ctx.fill();
     }
 
-    // Two-sided posts now rush past much more frequently. Their streak length grows
-    // continuously with speed, while position remains tied to world distance.
     const spacing=64;
     z=Math.ceil(distance/spacing)*spacing;
     const speedFrac=clamp((speed-90)/(MAX_SPEED-90),0,1);
@@ -363,7 +370,6 @@
       }
     }
 
-    // Tiny verge markers fill the near field with optic flow without becoming scenery.
     const streakSpacing=34;
     z=Math.ceil(distance/streakSpacing)*streakSpacing;
     for(;z<distance+Math.min(DRAW_DIST,520);z+=streakSpacing){
@@ -381,7 +387,6 @@
       }
     }
 
-    // Checkpoints are physical gantries in the world, not HUD elements.
     let cp=(Math.floor(distance/CHECKPOINT_SPACING)+1)*CHECKPOINT_SPACING;
     for(;cp<distance+DRAW_DIST;cp+=CHECKPOINT_SPACING)drawCheckpointGate(cp);
   }
@@ -393,7 +398,10 @@
     const s=clamp(W/520,.72,1.28);
 
     ctx.save();ctx.translate(x,y);
-    ctx.rotate(clamp(headingError,-.34,.34));
+    // Show the direction the car is actually yawing, not heading error relative
+    // to the road. Understeer in a right bend therefore looks like a right-turning
+    // car running wide, rather than a car apparently steering left.
+    ctx.rotate(clamp(yawRate*.20,-.14,.14));
 
     ctx.fillStyle='rgba(0,0,0,.30)';
     ctx.beginPath();ctx.ellipse(0,15*s,32*s,9*s,0,0,Math.PI*2);ctx.fill();
