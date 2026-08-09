@@ -48,20 +48,25 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   const ROAD_SEG=28;
   const CHECKPOINT_SPACING=1800;
 
-  // OutRun-style game loop: reach the next checkpoint before the clock expires.
-  // The cap prevents slow early sections from turning into a huge stored reserve.
-  const START_TIME=13;
-  const CHECKPOINT_TIME=9;
-  const MAX_TIME=15;
-  const OFFROAD_RECOVERY=.95;
-  const OFFROAD_SPEED=72;
+  // Tight OutRun-style clock. Full throttle reaches the first gate in about 8 s,
+  // so 9.5 s leaves only a small budget for the lifts needed to make the bends.
+  const START_TIME=9.5;
+  const CHECKPOINT_TIME=7;
+  const MAX_TIME=10.5;
+
+  // Leaving the kerbs slowly is a recoverable excursion. Doing it at high speed
+  // becomes a proper crash/spin: nearly stationary for long enough to hurt badly.
+  const OFFROAD_RECOVERY=.65;
+  const OFFROAD_SPEED=76;
+  const CRASH_SPEED=190;
+  const CRASH_RECOVERY=2.15;
 
   let pressed=false,started=false,gameOver=false;
   let startCharging=false,startCharge=0;
   let speed=86,distance=0,score=0,best=+(localStorage.tinyRunBest||0);
   let lateral=0,steerRate=0,curveDrift=0,understeer=0,steerFraction=0;
   let shake=0,nextCheckpoint=CHECKPOINT_SPACING;
-  let timeLeft=START_TIME,checkpointFlash=0,offroadCooldown=0;
+  let timeLeft=START_TIME,checkpointFlash=0,offroadCooldown=0,crashTimer=0;
   let roadPoints=[];
 
   function horizonY(){return H*.19;}
@@ -127,7 +132,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     pressed=false;started=false;gameOver=false;startCharging=false;startCharge=0;
     speed=86;distance=0;score=0;lateral=0;steerRate=0;curveDrift=0;understeer=0;steerFraction=0;
     shake=0;nextCheckpoint=CHECKPOINT_SPACING;
-    timeLeft=START_TIME;checkpointFlash=0;offroadCooldown=0;
+    timeLeft=START_TIME;checkpointFlash=0;offroadCooldown=0;crashTimer=0;
   }
 
   function launch(){
@@ -171,10 +176,22 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   function goOffRoad(){
     if(offroadCooldown>0||gameOver)return;
     const limit=DRIVEABLE_HALF-CAR_HALF-2;
+    const impactSpeed=speed;
     lateral=clamp(lateral,-limit,limit);
-    speed=Math.min(speed,OFFROAD_SPEED);
-    offroadCooldown=OFFROAD_RECOVERY;
-    shake=10;
+
+    if(impactSpeed>=CRASH_SPEED){
+      // A high-speed departure is the Tiny Run equivalent of OutRun's big crash:
+      // the run continues, but the clock keeps burning while the car spins/stops.
+      speed=Math.min(speed,32);
+      offroadCooldown=CRASH_RECOVERY;
+      crashTimer=CRASH_RECOVERY;
+      shake=16;
+    }else{
+      speed=Math.min(speed,OFFROAD_SPEED);
+      offroadCooldown=OFFROAD_RECOVERY;
+      crashTimer=0;
+      shake=8;
+    }
   }
 
   function update(dt){
@@ -191,12 +208,17 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     if(timeLeft<=0){endRun();return;}
 
     if(offroadCooldown>0)offroadCooldown=Math.max(0,offroadCooldown-dt);
+    if(crashTimer>0)crashTimer=Math.max(0,crashTimer-dt);
 
-    let accel;
-    if(offroadCooldown>0)accel=-18-.00008*speed*speed;
-    else if(pressed)accel=122*(1-speed/MAX_SPEED)-5-.000045*speed*speed;
-    else accel=-7-.00008*speed*speed;
-    speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
+    if(crashTimer>0){
+      speed=Math.max(0,speed-180*dt);
+    }else{
+      let accel;
+      if(offroadCooldown>0)accel=-18-.00008*speed*speed;
+      else if(pressed)accel=122*(1-speed/MAX_SPEED)-5-.000045*speed*speed;
+      else accel=-7-.00008*speed*speed;
+      speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
+    }
 
     const curve=roadRawCurvature(distance);
     const preview=entryCurve(distance);
@@ -239,6 +261,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 
     const netLateralRate=curveDrift+steerRate;
     lateral+=netLateralRate*dt;
+    if(crashTimer>0)lateral+=(0-lateral)*(1-Math.exp(-dt/.40));
     understeer=clamp(Math.max(0,-Math.sign(curve||1)*netLateralRate)/80,0,1.5);
 
     distance+=speed*dt;
@@ -364,10 +387,10 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     }
 
     const spacing=64;
-    z=Math.ceil(distance/spacing)*spacing;
+    let z2=Math.ceil(distance/spacing)*spacing;
     const speedFrac=clamp((speed-90)/(MAX_SPEED-90),0,1);
-    for(;z<distance+DRAW_DIST;z+=spacing){
-      const p=pointAtDistance(z-distance);
+    for(;z2<distance+DRAW_DIST;z2+=spacing){
+      const p=pointAtDistance(z2-distance);
       const h=lerp(2,58,p.p),w=lerp(1,7,p.p);
       for(const side of [-1,1]){
         const x=p.x+side*p.width*.70;
@@ -382,11 +405,11 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     }
 
     const streakSpacing=34;
-    z=Math.ceil(distance/streakSpacing)*streakSpacing;
-    for(;z<distance+Math.min(DRAW_DIST,520);z+=streakSpacing){
-      const p=pointAtDistance(z-distance);
+    let z3=Math.ceil(distance/streakSpacing)*streakSpacing;
+    for(;z3<distance+Math.min(DRAW_DIST,520);z3+=streakSpacing){
+      const p=pointAtDistance(z3-distance);
       if(p.p<.28)continue;
-      const index=Math.floor(z/streakSpacing);
+      const index=Math.floor(z3/streakSpacing);
       for(const side of [-1,1]){
         const x=p.x+side*p.width*(.76+(index%3)*.055);
         const len=lerp(1,17,p.p)*(.45+1.7*speedFrac);
@@ -404,9 +427,11 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     const x=W*.5;
     const y=H*.855;
     const s=clamp(W/520,.72,1.28);
+    const crashProgress=crashTimer>0?1-crashTimer/CRASH_RECOVERY:0;
+    const spin=crashTimer>0?crashProgress*Math.PI*4:0;
 
     ctx.save();ctx.translate(x,y);
-    ctx.rotate(clamp(steerFraction*.075,-.075,.075));
+    ctx.rotate(spin+clamp(steerFraction*.075,-.075,.075));
 
     ctx.fillStyle='rgba(0,0,0,.30)';ctx.beginPath();ctx.ellipse(0,15*s,32*s,9*s,0,0,Math.PI*2);ctx.fill();
     ctx.fillStyle='#d83f52';ctx.beginPath();
@@ -436,7 +461,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     const frac=clamp(timeLeft/MAX_TIME,0,1);
     const barW=clamp(W*.48,190,340),barH=7;
     const x=W*.5-barW*.5,y=12;
-    const urgent=timeLeft<4;
+    const urgent=timeLeft<3;
     const pulse=.72+.28*Math.sin(performance.now()*.020);
 
     ctx.fillStyle='rgba(3,7,14,.42)';ctx.fillRect(x-3,y-3,barW+6,barH+6);
@@ -445,11 +470,18 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     ctx.fillRect(x+1,y+1,(barW-2)*frac,barH-2);
 
     ctx.font='800 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.textAlign='center';ctx.textBaseline='top';
+    ctx.textBaseline='top';
+    ctx.textAlign='center';
     ctx.fillStyle=urgent?`rgba(255,255,255,${pulse})`:'rgba(255,255,255,.88)';
     ctx.fillText(`TIME ${Math.ceil(timeLeft)}`,W*.5,y+12);
 
+    // Score is always visible during play, like the original arcade HUD.
+    ctx.textAlign='right';
+    ctx.fillStyle='rgba(255,255,255,.90)';
+    ctx.fillText(`SCORE ${Math.floor(score).toString().padStart(6,'0')}`,W-12,11);
+
     if(checkpointFlash>0){
+      ctx.textAlign='center';
       ctx.font='900 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
       ctx.fillStyle=`rgba(255,225,125,${checkpointFlash})`;
       ctx.fillText(`CHECKPOINT  +${CHECKPOINT_TIME}`,W*.5,y+29);
