@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>Tiny Run</title>
 <style>
-  html,body{margin:0;height:100%;background:#07131d;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#fff}
-  canvas{display:block;width:100vw;height:100vh;touch-action:none}
+html,body{margin:0;height:100%;background:#07131d;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#fff}
+canvas{display:block;width:100vw;height:100vh;touch-action:none}
 </style>
 </head>
 <body>
@@ -25,17 +25,18 @@
   const MIN_SPEED=48;
   const MAX_SPEED=305;
 
-  const ROAD_CURVE_SCALE=.00155;
+  // Pseudo-3D arcade handling, deliberately closer to Pole Position / OutRun
+  // descendants than to a world-space vehicle simulation. The road curvature
+  // pushes the player's lateral road coordinate outward. Automatic steering can
+  // oppose that push only at a finite rate. There is no yaw, lateral velocity,
+  // grip mode, or recenter operation.
   const ROAD_HALF=116;
   const CAR_HALF=12;
-
-  // OutRun-style lateral model. The road curve pushes the car sideways at a
-  // rate proportional to speed. Steering directly changes lateral position too.
-  // There is no yaw, lateral velocity, slip state, or recenter mode.
   const CURVE_DRIFT_GAIN=.40;
   const MAX_STEER_RATE=95;
-  const CENTER_GAIN=.80;
+  const CENTER_GAIN=.55;
 
+  const ROAD_CURVE_SCALE=.00155;
   const DRAW_DIST=1080;
   const ROAD_SEG=28;
   const CHECKPOINT_SPACING=1800;
@@ -43,7 +44,7 @@
   let pressed=false,started=false,gameOver=false;
   let startCharging=false,startCharge=0;
   let speed=86,distance=0,score=0,best=+(localStorage.tinyRunBest||0);
-  let lateral=0,steerRate=0,curveDrift=0,understeer=0;
+  let lateral=0,steerRate=0,curveDrift=0,understeer=0,steerFraction=0;
   let shake=0,nextCheckpoint=CHECKPOINT_SPACING;
   let roadPoints=[];
 
@@ -101,7 +102,7 @@
 
   function reset(){
     pressed=false;started=false;gameOver=false;startCharging=false;startCharge=0;
-    speed=86;distance=0;score=0;lateral=0;steerRate=0;curveDrift=0;understeer=0;
+    speed=86;distance=0;score=0;lateral=0;steerRate=0;curveDrift=0;understeer=0;steerFraction=0;
     shake=0;nextCheckpoint=CHECKPOINT_SPACING;
   }
 
@@ -109,12 +110,10 @@
     if(gameOver)reset();
     started=true;gameOver=false;pressed=false;startCharging=false;startCharge=0;
   }
-
   function press(){
     if(!started||gameOver){startCharging=true;startCharge=0;pressed=false;return;}
     pressed=true;
   }
-
   function release(){
     if(!started||gameOver){
       if(startCharging&&startCharge>=1)launch();
@@ -159,28 +158,26 @@
     else accel=-7-.00008*speed*speed;
     speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
 
-    // This deliberately mirrors OutRun's simple structure: the road itself moves
-    // the car sideways, and steering is a second direct x-position contribution.
-    // A right bend pushes the car toward its outside (left), and vice versa.
-    const k=roadRawCurvature(distance);
-    curveDrift=-k*speed*CURVE_DRIFT_GAIN;
+    // Classic pseudo-3D racer logic: the bend moves playerX toward the outside,
+    // while steering directly moves playerX the other way. There is no second
+    // state variable and therefore no hidden lateral momentum or snap-to-centre.
+    const curve=roadRawCurvature(distance);
+    curveDrift=-curve*speed*CURVE_DRIFT_GAIN;
 
-    // The automatic driver first spends steering authority cancelling the bend.
-    // Any steering capacity left over is used to return toward the centre. There
-    // is no special recovery mode, so nothing can snap or teleport.
     const lowSpeedScale=clamp(speed/110,.55,1);
     const maxSteer=MAX_STEER_RATE*lowSpeedScale;
+
+    // First cancel the bend. Only unused steering authority can bring an existing
+    // lateral error back toward centre, so recovery cannot be instantaneous.
     const followSteer=clamp(-curveDrift,-maxSteer,maxSteer);
     const spare=Math.max(0,maxSteer-Math.abs(followSteer));
     const centreSteer=clamp(-lateral*CENTER_GAIN,-spare,spare);
     steerRate=followSteer+centreSteer;
+    steerFraction=maxSteer>0?steerRate/maxSteer:0;
 
-    // If curve drift is stronger than maximum steering, the uncancelled remainder
-    // carries the car continuously toward the outside edge. That is the failure.
     const netLateralRate=curveDrift+steerRate;
     lateral+=netLateralRate*dt;
     understeer=clamp((Math.abs(curveDrift)-maxSteer)/Math.max(maxSteer,1),0,1.5);
-
     distance+=speed*dt;
     score+=speed*dt*.10;
 
@@ -202,10 +199,14 @@
     const count=Math.ceil(DRAW_DIST/ROAD_SEG);
     let heading=0,offset=0;
     const hy=horizonY();
+    const roadHalfPx=W*.98*.50;
+    const cameraShift=-(lateral/ROAD_HALF)*roadHalfPx;
+
     for(let i=0;i<=count;i++){
       const d=i*ROAD_SEG;
       const p=perspective(d);
-      roadPoints.push({d,p,x:W*.5+offset*p*1.28,y:lerp(hy,H*1.16,p),width:lerp(6,W*.98,p)});
+      const x=W*.5+cameraShift*p+offset*p*1.28;
+      roadPoints.push({d,p,x,y:lerp(hy,H*1.16,p),width:lerp(6,W*.98,p)});
       if(i<count){
         const mid=d+ROAD_SEG*.5;
         heading+=roadCurvature(distance+mid)*ROAD_SEG;
@@ -274,13 +275,16 @@
     for(let i=roadPoints.length-2;i>=0;i--){
       const a=roadPoints[i],b=roadPoints[i+1];
       const band=Math.floor((distance+a.d)/ROAD_SEG);
+
       ctx.fillStyle=band&1?'#236249':'#1b5842';
       ctx.beginPath();ctx.moveTo(0,a.y);ctx.lineTo(a.x-a.width*.63,a.y);ctx.lineTo(b.x-b.width*.63,b.y);ctx.lineTo(0,b.y);ctx.fill();
       ctx.beginPath();ctx.moveTo(W,a.y);ctx.lineTo(a.x+a.width*.63,a.y);ctx.lineTo(b.x+b.width*.63,b.y);ctx.lineTo(W,b.y);ctx.fill();
+
       ctx.fillStyle=band&1?'#f2e7cf':'#d64f50';
       for(const side of [-1,1]){
         ctx.beginPath();ctx.moveTo(a.x+side*a.width*.50,a.y);ctx.lineTo(a.x+side*a.width*.62,a.y);ctx.lineTo(b.x+side*b.width*.62,b.y);ctx.lineTo(b.x+side*b.width*.50,b.y);ctx.fill();
       }
+
       ctx.fillStyle=band&1?'#47474e':'#3f4047';
       ctx.beginPath();ctx.moveTo(a.x-a.width*.50,a.y);ctx.lineTo(a.x+a.width*.50,a.y);ctx.lineTo(b.x+b.width*.50,b.y);ctx.lineTo(b.x-b.width*.50,b.y);ctx.fill();
     }
@@ -332,15 +336,12 @@
   }
 
   function drawCar(){
-    const roadHalfPx=W*.98*.50;
-    const x=W*.5+(lateral/ROAD_HALF)*roadHalfPx;
+    const x=W*.5;
     const y=H*.855;
     const s=clamp(W/520,.72,1.28);
 
     ctx.save();ctx.translate(x,y);
-    // OutRun changes the car frame with steering input. A tiny rotation gives the
-    // same readable cue here, and is driven by the exact steering term used above.
-    ctx.rotate(clamp(steerRate/MAX_STEER_RATE*.075,-.075,.075));
+    ctx.rotate(clamp(steerFraction*.055,-.055,.055));
 
     ctx.fillStyle='rgba(0,0,0,.30)';ctx.beginPath();ctx.ellipse(0,15*s,32*s,9*s,0,0,Math.PI*2);ctx.fill();
     ctx.fillStyle='#d83f52';ctx.beginPath();
@@ -351,10 +352,10 @@
     ctx.fillStyle='#181a20';ctx.fillRect(-30*s,8*s,5*s,13*s);ctx.fillRect(25*s,8*s,5*s,13*s);
 
     if(understeer>0){
-      const alpha=.12+.28*clamp(understeer,0,1);
-      ctx.strokeStyle=`rgba(22,22,25,${alpha})`;ctx.lineWidth=2*s;
-      ctx.beginPath();ctx.moveTo(-20*s,20*s);ctx.lineTo(-20*s,29*s);ctx.stroke();
-      ctx.beginPath();ctx.moveTo(20*s,20*s);ctx.lineTo(20*s,29*s);ctx.stroke();
+      const a=.10+.25*clamp(understeer,0,1);
+      ctx.strokeStyle=`rgba(22,22,25,${a})`;ctx.lineWidth=2*s;
+      ctx.beginPath();ctx.moveTo(-20*s,20*s);ctx.lineTo(-20*s,28*s);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(20*s,20*s);ctx.lineTo(20*s,28*s);ctx.stroke();
     }
 
     if(pressed&&speed>95){
