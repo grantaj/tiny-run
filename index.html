@@ -48,11 +48,20 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   const ROAD_SEG=28;
   const CHECKPOINT_SPACING=1800;
 
+  // OutRun-style game loop: reach the next checkpoint before the clock expires.
+  // The cap prevents slow early sections from turning into a huge stored reserve.
+  const START_TIME=13;
+  const CHECKPOINT_TIME=9;
+  const MAX_TIME=15;
+  const OFFROAD_RECOVERY=.95;
+  const OFFROAD_SPEED=72;
+
   let pressed=false,started=false,gameOver=false;
   let startCharging=false,startCharge=0;
   let speed=86,distance=0,score=0,best=+(localStorage.tinyRunBest||0);
   let lateral=0,steerRate=0,curveDrift=0,understeer=0,steerFraction=0;
   let shake=0,nextCheckpoint=CHECKPOINT_SPACING;
+  let timeLeft=START_TIME,checkpointFlash=0,offroadCooldown=0;
   let roadPoints=[];
 
   function horizonY(){return H*.19;}
@@ -118,6 +127,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     pressed=false;started=false;gameOver=false;startCharging=false;startCharge=0;
     speed=86;distance=0;score=0;lateral=0;steerRate=0;curveDrift=0;understeer=0;steerFraction=0;
     shake=0;nextCheckpoint=CHECKPOINT_SPACING;
+    timeLeft=START_TIME;checkpointFlash=0;offroadCooldown=0;
   }
 
   function launch(){
@@ -150,25 +160,41 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     pressed=false;
   });
 
-  function crash(){
+  function endRun(){
     if(gameOver)return;
     gameOver=true;pressed=false;startCharging=false;startCharge=0;
-    shake=11;
+    shake=7;
     best=Math.max(best,Math.floor(score));
     localStorage.tinyRunBest=best;
+  }
+
+  function goOffRoad(){
+    if(offroadCooldown>0||gameOver)return;
+    const limit=DRIVEABLE_HALF-CAR_HALF-2;
+    lateral=clamp(lateral,-limit,limit);
+    speed=Math.min(speed,OFFROAD_SPEED);
+    offroadCooldown=OFFROAD_RECOVERY;
+    shake=10;
   }
 
   function update(dt){
     dt=Math.min(dt,.033);
     shake*=Math.pow(.018,dt);
+    checkpointFlash=Math.max(0,checkpointFlash-dt*1.7);
 
     if(!started||gameOver){
       if(startCharging)startCharge=clamp(startCharge+dt/START_HOLD,0,1);
       return;
     }
 
+    timeLeft=Math.max(0,timeLeft-dt);
+    if(timeLeft<=0){endRun();return;}
+
+    if(offroadCooldown>0)offroadCooldown=Math.max(0,offroadCooldown-dt);
+
     let accel;
-    if(pressed)accel=122*(1-speed/MAX_SPEED)-5-.000045*speed*speed;
+    if(offroadCooldown>0)accel=-18-.00008*speed*speed;
+    else if(pressed)accel=122*(1-speed/MAX_SPEED)-5-.000045*speed*speed;
     else accel=-7-.00008*speed*speed;
     speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
 
@@ -218,10 +244,12 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     distance+=speed*dt;
     score+=speed*dt*.10;
 
-    if(Math.abs(lateral)>=DRIVEABLE_HALF-CAR_HALF){crash();return;}
+    if(Math.abs(lateral)>=DRIVEABLE_HALF-CAR_HALF)goOffRoad();
 
     while(distance>=nextCheckpoint){
       nextCheckpoint+=CHECKPOINT_SPACING;
+      timeLeft=Math.min(MAX_TIME,timeLeft+CHECKPOINT_TIME);
+      checkpointFlash=1;
       score+=500;
     }
   }
@@ -395,12 +423,38 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
       ctx.beginPath();ctx.moveTo(20*s,20*s);ctx.lineTo(20*s,28*s);ctx.stroke();
     }
 
-    if(pressed&&speed>95){
+    if(pressed&&speed>95&&offroadCooldown<=0){
       const flick=(Math.sin(performance.now()*.035)+1)*.5;
       ctx.fillStyle=`rgba(255,205,103,${.40+.35*flick})`;
       ctx.beginPath();ctx.moveTo(-15*s,20*s);ctx.lineTo(-11*s,(27+5*flick)*s);ctx.lineTo(-7*s,20*s);ctx.fill();
     }
     ctx.restore();
+  }
+
+  function drawTimer(){
+    if(!started||gameOver)return;
+    const frac=clamp(timeLeft/MAX_TIME,0,1);
+    const barW=clamp(W*.48,190,340),barH=7;
+    const x=W*.5-barW*.5,y=12;
+    const urgent=timeLeft<4;
+    const pulse=.72+.28*Math.sin(performance.now()*.020);
+
+    ctx.fillStyle='rgba(3,7,14,.42)';ctx.fillRect(x-3,y-3,barW+6,barH+6);
+    ctx.strokeStyle='rgba(255,255,255,.46)';ctx.lineWidth=1;ctx.strokeRect(x,y,barW,barH);
+    ctx.fillStyle=urgent?`rgba(255,91,84,${pulse})`:'#ffd77a';
+    ctx.fillRect(x+1,y+1,(barW-2)*frac,barH-2);
+
+    ctx.font='800 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+    ctx.textAlign='center';ctx.textBaseline='top';
+    ctx.fillStyle=urgent?`rgba(255,255,255,${pulse})`:'rgba(255,255,255,.88)';
+    ctx.fillText(`TIME ${Math.ceil(timeLeft)}`,W*.5,y+12);
+
+    if(checkpointFlash>0){
+      ctx.font='900 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+      ctx.fillStyle=`rgba(255,225,125,${checkpointFlash})`;
+      ctx.fillText(`CHECKPOINT  +${CHECKPOINT_TIME}`,W*.5,y+29);
+    }
+    ctx.textBaseline='alphabetic';ctx.textAlign='left';
   }
 
   function drawOverlay(){
@@ -412,11 +466,12 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     ctx.font='700 13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
     ctx.fillStyle='rgba(255,255,255,.76)';
     if(gameOver){
-      ctx.fillText('OFF ROAD',W*.5,H*.40);
+      ctx.fillText('TIME UP',W*.5,H*.40);
       ctx.fillText(`SCORE ${Math.floor(score)}   BEST ${Math.floor(best)}`,W*.5,H*.40+23);
     }else{
       ctx.fillText('HOLD TO ACCELERATE',W*.5,H*.40);
       ctx.fillText('LIFT TO TIGHTEN LINE',W*.5,H*.40+23);
+      ctx.fillText('CHECKPOINTS ADD TIME',W*.5,H*.40+46);
     }
     const barW=clamp(W*.46,190,330),barH=9,x=W*.5-barW/2,y=H*.58;
     ctx.strokeStyle='rgba(255,255,255,.48)';ctx.lineWidth=2;ctx.strokeRect(x,y,barW,barH);
@@ -430,7 +485,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     ctx.save();
     const speedShake=started&&!gameOver?clamp((speed-210)/95,0,1)*1.15:0;
     if(shake>0||speedShake>0){const s=shake+speedShake;ctx.translate((Math.random()-.5)*s,(Math.random()-.5)*s);}
-    drawBackground();drawRoad();drawCar();drawOverlay();
+    drawBackground();drawRoad();drawCar();drawTimer();drawOverlay();
     ctx.restore();
   }
 
