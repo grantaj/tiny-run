@@ -459,60 +459,66 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
     ctx.restore();
   }
 
-  function drawTimer(){
+  function drawHUD(){
     if(!started||gameOver)return;
-    const frac=clamp(timeLeft/MAX_TIME,0,1);
-    const hudY=30;
-    const barY=hudY+19;
-    const barW=clamp(W*.36,130,240),barH=6;
-    const x=W*.5-barW*.5;
+
+    const hudTop=18;
+    const textY=hudTop+12;
+    const barY=hudTop+25;
+    const barH=5;
+    const sideW=Math.min(104,Math.max(82,W*.27));
+    const midW=Math.min(150,Math.max(98,W*.34));
+    const speedX=12;
+    const timeX=W*.5-midW*.5;
+    const scoreX=W-12;
+    const speedFrac=clamp(speed/MAX_SPEED,0,1);
+    const timeFrac=clamp(timeLeft/MAX_TIME,0,1);
     const urgent=timeLeft<2.5;
     const pulse=.72+.28*Math.sin(performance.now()*.020);
 
-    ctx.fillStyle='rgba(3,7,14,.48)';ctx.fillRect(0,hudY-7,W,38);
+    // Everything important lives together at the top, close to the road ahead.
+    ctx.fillStyle='rgba(3,7,14,.58)';
+    ctx.fillRect(0,hudTop-7,W,40);
 
-    ctx.font='800 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+    // Use the same conservative canvas font for every HUD number. This avoids the
+    // Android rendering path that displayed the SPEED label but lost the large number.
+    ctx.font='bold 12px monospace';
     ctx.textBaseline='middle';
 
+    ctx.textAlign='left';
+    ctx.fillStyle='#fff';
+    ctx.fillText(`SPEED ${Math.round(speed).toString().padStart(3,'0')}`,speedX,textY);
+
     ctx.textAlign='center';
-    ctx.fillStyle=urgent?`rgba(255,255,255,${pulse})`:'rgba(255,255,255,.94)';
-    ctx.fillText(`TIME ${Math.ceil(timeLeft)}`,W*.5,hudY);
+    ctx.fillStyle=urgent?`rgba(255,255,255,${pulse})`:'#fff';
+    ctx.fillText(`TIME ${Math.ceil(timeLeft)}`,W*.5,textY);
 
     ctx.textAlign='right';
-    ctx.fillStyle='rgba(255,255,255,.94)';
-    ctx.fillText(`SCORE ${Math.floor(score).toString().padStart(6,'0')}`,W-14,hudY);
+    ctx.fillStyle='#fff';
+    ctx.fillText(`SCORE ${Math.floor(score).toString().padStart(6,'0')}`,scoreX,textY);
 
-    ctx.fillStyle='rgba(3,7,14,.50)';ctx.fillRect(x-2,barY-2,barW+4,barH+4);
-    ctx.strokeStyle='rgba(255,255,255,.46)';ctx.lineWidth=1;ctx.strokeRect(x,barY,barW,barH);
+    // Speed bar: left third.
+    ctx.fillStyle='rgba(255,255,255,.20)';
+    ctx.fillRect(speedX,barY,sideW,barH);
+    ctx.fillStyle='#ffd77a';
+    ctx.fillRect(speedX,barY,sideW*speedFrac,barH);
+
+    // Time bar: centre third.
+    ctx.fillStyle='rgba(255,255,255,.20)';
+    ctx.fillRect(timeX,barY,midW,barH);
     ctx.fillStyle=urgent?`rgba(255,91,84,${pulse})`:'#ffd77a';
-    ctx.fillRect(x+1,barY+1,(barW-2)*frac,barH-2);
+    ctx.fillRect(timeX,barY,midW*timeFrac,barH);
 
     if(checkpointFlash>0){
       ctx.textAlign='center';
       ctx.textBaseline='top';
-      ctx.font='900 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+      ctx.font='bold 11px monospace';
       ctx.fillStyle=`rgba(255,225,125,${checkpointFlash})`;
-      ctx.fillText(`CHECKPOINT  +${CHECKPOINT_TIME}`,W*.5,barY+12);
+      ctx.fillText(`CHECKPOINT +${CHECKPOINT_TIME}`,W*.5,barY+9);
     }
-    ctx.textBaseline='alphabetic';ctx.textAlign='left';
-  }
 
-  function drawSpeedo(){
-    if(!started||gameOver)return;
-    const boxW=102,boxH=49;
-    const x=14,y=Math.max(78,H-boxH-24);
-    ctx.fillStyle='rgba(3,7,14,.72)';ctx.fillRect(x,y,boxW,boxH);
-    ctx.strokeStyle='rgba(255,255,255,.42)';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,boxW-1,boxH-1);
-
-    ctx.textAlign='left';ctx.textBaseline='top';
-    ctx.font='700 9px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.fillStyle='rgba(255,255,255,.70)';ctx.fillText('SPEED',x+8,y+6);
-
-    ctx.font='900 25px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.fillStyle='#fff';ctx.fillText(Math.round(speed).toString().padStart(3,'0'),x+7,y+18);
-    ctx.font='800 9px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.fillStyle='rgba(255,255,255,.82)';ctx.fillText('KM/H',x+69,y+30);
     ctx.textBaseline='alphabetic';
+    ctx.textAlign='left';
   }
 
   function drawOverlay(){
@@ -547,7 +553,7 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
     ctx.restore();
 
     // Fixed-screen UI is never affected by camera shake or world transforms.
-    drawTimer();drawSpeedo();drawOverlay();
+    drawHUD();drawOverlay();
   }
 
   let last=performance.now();
