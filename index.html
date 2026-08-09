@@ -30,10 +30,13 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   // steering follows the curvature actually under the car.
   const ROAD_HALF=108;
   const CAR_HALF=12;
+  // The asphalt is drawn to .50 road width and the red/white kerb to .62.
+  // Collision therefore happens at the outside of the kerb, not the asphalt.
+  const DRIVEABLE_HALF=ROAD_HALF*(.62/.50);
   const CURVE_DRIFT_GAIN=.60;
-  const THROTTLE_STEER_RATE=55;
+  const THROTTLE_STEER_RATE=72;
   const LIFT_STEER_RATE=190;
-  const THROTTLE_TURN_FACTOR=.55;
+  const THROTTLE_TURN_FACTOR=.68;
   const LIFT_TURN_FACTOR=1.15;
   const ENTRY_TURN_FACTOR=.42;
   const STEER_RESPONSE=.075;
@@ -180,8 +183,8 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 
     if(inCorner){
       // Mid-corner steering belongs to the bend under the car, never the next
-      // piece of road. Power deliberately understeers; lifting deliberately
-      // turns farther inward than the neutral road-following rate.
+      // piece of road. Power opens the arc but still retains substantial turn;
+      // lifting deliberately turns farther inward than neutral road-following.
       const factor=pressed?THROTTLE_TURN_FACTOR:LIFT_TURN_FACTOR;
       desiredSteer=clamp(curve*speed*CURVE_DRIFT_GAIN*factor,-steerLimit,steerLimit);
     }else if(!pressed&&Math.abs(preview)>.05){
@@ -205,7 +208,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     distance+=speed*dt;
     score+=speed*dt*.10;
 
-    if(Math.abs(lateral)>=ROAD_HALF-CAR_HALF){crash();return;}
+    if(Math.abs(lateral)>=DRIVEABLE_HALF-CAR_HALF){crash();return;}
 
     while(distance>=nextCheckpoint){
       nextCheckpoint+=CHECKPOINT_SPACING;
