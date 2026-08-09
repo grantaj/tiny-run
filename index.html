@@ -28,21 +28,15 @@
   const ROAD_CURVE_SCALE=.00155;
   const ROAD_HALF=116;
   const CAR_HALF=12;
-  const WHEELBASE=18;
   const MAX_LAT_ACCEL=62;
-  const STEER_LIMIT=.42;
 
-  // The virtual driver asks for the road's own yaw first, then makes a small
-  // road-relative correction. In a real bend the requested yaw is never allowed
-  // to reverse sign: too much speed can only produce understeer, not a bizarre
-  // counter-steer into the opposite direction.
-  const HEADING_RECOVERY=2.4;
-  const OFFSET_RECOVERY=.55;
-  const YAW_RESPONSE=.035;
-  const BEND_EPS=.00003;
+  // Road-frame lateral dynamics. The road asks for v^2*k lateral acceleration;
+  // the tyres can only supply MAX_LAT_ACCEL. Any deficit pushes the car outward.
+  // Spare grip is used by a heavily damped line-following term to recover centre.
+  // There is no yaw/steering inertia state, so there is nothing boat-like to ring.
+  const LINE_OMEGA=.62;
+  const LINE_DAMPING=1.25;
 
-  // A deliberately short camera depth gives strong optic flow. At maximum speed
-  // the visible road is only a few seconds long, closer to the feel of old arcade racers.
   const DRAW_DIST=1080;
   const ROAD_SEG=28;
   const CHECKPOINT_SPACING=1800;
@@ -50,7 +44,7 @@
   let pressed=false,started=false,gameOver=false;
   let startCharging=false,startCharge=0;
   let speed=86,distance=0,score=0,best=+(localStorage.tinyRunBest||0);
-  let lateral=0,headingError=0,yawRate=0;
+  let lateral=0,lateralV=0,tireAccel=0;
   let shake=0,nextCheckpoint=CHECKPOINT_SPACING;
   let roadPoints=[];
 
@@ -75,14 +69,16 @@
     {len:500,k:-1.05},
     {len:240,k:0},
     {len:420,k:.72},
-    {len:340,k:-.78},
+    {len:180,k:0},
+    {len:360,k:-.90},
     {len:260,k:0},
     {len:460,k:1.45},
-    {len:300,k:.30},
+    {len:180,k:0},
     {len:520,k:-.58},
     {len:240,k:0},
     {len:430,k:-1.65},
-    {len:260,k:.70},
+    {len:180,k:0},
+    {len:300,k:.70},
     {len:520,k:0}
   ];
   const courseLen=bends.reduce((a,b)=>a+b.len,0);
@@ -94,10 +90,6 @@
       if(q<=b.len){
         const prev=bends[(i-1+bends.length)%bends.length].k;
         const edge=Math.min(120,b.len*.30);
-        // Each boundary is blended exactly once, at the start of the new
-        // section. The old code also blended at the end of the previous
-        // section, which made curvature reverse and then jump back at every
-        // boundary (especially obvious when consecutive bends had opposite signs).
         if(q<edge)return lerp(prev,b.k,smooth(q/edge));
         return b.k;
       }
@@ -110,7 +102,7 @@
 
   function reset(){
     pressed=false;started=false;gameOver=false;startCharging=false;startCharge=0;
-    speed=86;distance=0;score=0;lateral=0;headingError=0;yawRate=0;
+    speed=86;distance=0;score=0;lateral=0;lateralV=0;tireAccel=0;
     shake=0;nextCheckpoint=CHECKPOINT_SPACING;
   }
 
@@ -163,56 +155,36 @@
       return;
     }
 
-    // Press = throttle. Releasing is genuinely coasting: rolling/aero drag only.
+    // Press = throttle; release = coast with only rolling/aero drag.
     let accel;
-    if(pressed){
-      accel=122*(1-speed/MAX_SPEED)-5-.000045*speed*speed;
-    }else{
-      accel=-7-.00008*speed*speed;
-    }
+    if(pressed)accel=122*(1-speed/MAX_SPEED)-5-.000045*speed*speed;
+    else accel=-7-.00008*speed*speed;
     speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
 
     const kRoad=roadCurvature(distance);
-    const denom=Math.max(.70,1-kRoad*lateral);
-    const forward=speed*Math.cos(headingError)/denom;
-    const roadYaw=kRoad*forward;
 
-    // Follow the road curvature, with a damped correction for path error.
-    // Crucially, once we are in a bend the virtual driver is not allowed to ask
-    // for yaw in the opposite direction. A fast car therefore runs wide because
-    // available yaw is insufficient, not because the controller changes its mind.
-    const correctionYaw=
-      -HEADING_RECOVERY*headingError
-      -OFFSET_RECOVERY*(lateral/ROAD_HALF);
-    const desiredYaw=roadYaw+correctionYaw;
+    // This is the actual physics game: following the road centre at speed v needs
+    // lateral acceleration v^2*k. If the tyres cannot provide it, the remaining
+    // acceleration acts outward in the road frame and the car runs wide.
+    const roadAccel=speed*speed*kRoad;
 
-    const maxSteerYaw=speed*Math.tan(STEER_LIMIT)/WHEELBASE;
-    const maxGripYaw=MAX_LAT_ACCEL/Math.max(speed,45);
-    const maxYaw=Math.min(maxSteerYaw,maxGripYaw);
+    // A damped line follower spends only *spare tyre grip* on getting back to the
+    // centre. It cannot create extra grip and it has no delayed steering state.
+    const lineCorrection=
+      -(LINE_OMEGA*LINE_OMEGA)*lateral
+      -2*LINE_DAMPING*LINE_OMEGA*lateralV;
+    const requestedAccel=roadAccel+lineCorrection;
+    tireAccel=clamp(requestedAccel,-MAX_LAT_ACCEL,MAX_LAT_ACCEL);
 
-    let targetYaw;
-    if(kRoad>BEND_EPS){
-      targetYaw=clamp(desiredYaw,0,maxYaw);
-    }else if(kRoad<-BEND_EPS){
-      targetYaw=clamp(desiredYaw,-maxYaw,0);
-    }else{
-      targetYaw=clamp(desiredYaw,-maxYaw,maxYaw);
-    }
+    const relativeAccel=tireAccel-roadAccel;
+    lateralV+=relativeAccel*dt;
+    lateral+=lateralV*dt;
+    distance+=speed*dt;
+    score+=speed*dt*.10;
 
-    yawRate+=(targetYaw-yawRate)*(1-Math.exp(-dt/YAW_RESPONSE));
-
-    // Do not carry yaw from the previous bend into a bend of the opposite sign.
-    if(kRoad>BEND_EPS&&yawRate<0)yawRate=0;
-    if(kRoad<-BEND_EPS&&yawRate>0)yawRate=0;
-
-    lateral+=speed*Math.sin(headingError)*dt;
-    headingError+=(yawRate-roadYaw)*dt;
-    headingError=clamp(headingError,-.85,.85);
-    distance+=Math.max(0,forward)*dt;
-    score+=Math.max(0,forward)*dt*.10;
-
-    if(Math.abs(kRoad)<BEND_EPS&&Math.abs(lateral)<.04&&Math.abs(headingError)<.0004&&Math.abs(yawRate)<.002){
-      lateral=0;headingError=0;yawRate=0;
+    // Remove only microscopic numerical residue; real lateral motion is retained.
+    if(Math.abs(kRoad)<1e-7&&Math.abs(lateral)<.02&&Math.abs(lateralV)<.02){
+      lateral=0;lateralV=0;tireAccel=0;
     }
 
     if(Math.abs(lateral)>=ROAD_HALF-CAR_HALF){crash();return;}
@@ -236,12 +208,7 @@
     for(let i=0;i<=count;i++){
       const d=i*ROAD_SEG;
       const p=perspective(d);
-      roadPoints.push({
-        d,p,
-        x:W*.5+offset*p*1.28,
-        y:lerp(hy,H*1.16,p),
-        width:lerp(6,W*.98,p)
-      });
+      roadPoints.push({d,p,x:W*.5+offset*p*1.28,y:lerp(hy,H*1.16,p),width:lerp(6,W*.98,p)});
       if(i<count){
         const mid=d+ROAD_SEG*.5;
         heading+=roadCurvature(distance+mid)*ROAD_SEG;
@@ -287,20 +254,15 @@
     const d=z-distance;
     if(d<=0||d>=DRAW_DIST)return;
     const p=pointAtDistance(d);
-    const h=lerp(2,92,p.p);
-    const postW=lerp(1,8,p.p);
+    const h=lerp(2,92,p.p),postW=lerp(1,8,p.p);
     const left=p.x-p.width*.57,right=p.x+p.width*.57,top=p.y-h;
-
     ctx.fillStyle='#eee2ca';
-    ctx.fillRect(left-postW/2,top,postW,h);
-    ctx.fillRect(right-postW/2,top,postW,h);
-
+    ctx.fillRect(left-postW/2,top,postW,h);ctx.fillRect(right-postW/2,top,postW,h);
     const bannerH=Math.max(2,h*.22);
     ctx.fillStyle='#d84c50';ctx.fillRect(left,top,right-left,bannerH);
     ctx.fillStyle='#f5e8cc';
     const stripeW=Math.max(2,(right-left)/12);
     for(let x=left;x<right;x+=stripeW*2)ctx.fillRect(x,top,stripeW,bannerH);
-
     if(p.p>.18){
       const fs=clamp(5+17*p.p,7,20);
       ctx.font=`900 ${fs}px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace`;
@@ -312,53 +274,34 @@
 
   function drawRoad(){
     buildRoadPoints();
-
     for(let i=roadPoints.length-2;i>=0;i--){
       const a=roadPoints[i],b=roadPoints[i+1];
       const band=Math.floor((distance+a.d)/ROAD_SEG);
-
       ctx.fillStyle=band&1?'#236249':'#1b5842';
-      ctx.beginPath();
-      ctx.moveTo(0,a.y);ctx.lineTo(a.x-a.width*.63,a.y);
-      ctx.lineTo(b.x-b.width*.63,b.y);ctx.lineTo(0,b.y);ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(W,a.y);ctx.lineTo(a.x+a.width*.63,a.y);
-      ctx.lineTo(b.x+b.width*.63,b.y);ctx.lineTo(W,b.y);ctx.fill();
-
+      ctx.beginPath();ctx.moveTo(0,a.y);ctx.lineTo(a.x-a.width*.63,a.y);ctx.lineTo(b.x-b.width*.63,b.y);ctx.lineTo(0,b.y);ctx.fill();
+      ctx.beginPath();ctx.moveTo(W,a.y);ctx.lineTo(a.x+a.width*.63,a.y);ctx.lineTo(b.x+b.width*.63,b.y);ctx.lineTo(W,b.y);ctx.fill();
       ctx.fillStyle=band&1?'#f2e7cf':'#d64f50';
       for(const side of [-1,1]){
-        ctx.beginPath();
-        ctx.moveTo(a.x+side*a.width*.50,a.y);
-        ctx.lineTo(a.x+side*a.width*.62,a.y);
-        ctx.lineTo(b.x+side*b.width*.62,b.y);
-        ctx.lineTo(b.x+side*b.width*.50,b.y);
-        ctx.fill();
+        ctx.beginPath();ctx.moveTo(a.x+side*a.width*.50,a.y);ctx.lineTo(a.x+side*a.width*.62,a.y);ctx.lineTo(b.x+side*b.width*.62,b.y);ctx.lineTo(b.x+side*b.width*.50,b.y);ctx.fill();
       }
-
       ctx.fillStyle=band&1?'#47474e':'#3f4047';
-      ctx.beginPath();
-      ctx.moveTo(a.x-a.width*.50,a.y);ctx.lineTo(a.x+a.width*.50,a.y);
-      ctx.lineTo(b.x+b.width*.50,b.y);ctx.lineTo(b.x-b.width*.50,b.y);ctx.fill();
+      ctx.beginPath();ctx.moveTo(a.x-a.width*.50,a.y);ctx.lineTo(a.x+a.width*.50,a.y);ctx.lineTo(b.x+b.width*.50,b.y);ctx.lineTo(b.x-b.width*.50,b.y);ctx.fill();
     }
 
     const dashPeriod=56,dashLen=25;
     let z=Math.ceil(distance/dashPeriod)*dashPeriod;
     for(;z<distance+DRAW_DIST;z+=dashPeriod){
-      const d0=z-distance,d1=Math.min(d0+dashLen,DRAW_DIST);
-      const a=pointAtDistance(d0),b=pointAtDistance(d1);
+      const a=pointAtDistance(z-distance),b=pointAtDistance(Math.min(z-distance+dashLen,DRAW_DIST));
       const wa=a.width*.011,wb=b.width*.011;
       ctx.fillStyle='rgba(255,246,208,.84)';
-      ctx.beginPath();
-      ctx.moveTo(a.x-wa,a.y);ctx.lineTo(a.x+wa,a.y);
-      ctx.lineTo(b.x+wb,b.y);ctx.lineTo(b.x-wb,b.y);ctx.fill();
+      ctx.beginPath();ctx.moveTo(a.x-wa,a.y);ctx.lineTo(a.x+wa,a.y);ctx.lineTo(b.x+wb,b.y);ctx.lineTo(b.x-wb,b.y);ctx.fill();
     }
 
     const spacing=64;
     z=Math.ceil(distance/spacing)*spacing;
     const speedFrac=clamp((speed-90)/(MAX_SPEED-90),0,1);
     for(;z<distance+DRAW_DIST;z+=spacing){
-      const d=z-distance;
-      const p=pointAtDistance(d);
+      const p=pointAtDistance(z-distance);
       const h=lerp(2,58,p.p),w=lerp(1,7,p.p);
       for(const side of [-1,1]){
         const x=p.x+side*p.width*.70;
@@ -375,14 +318,12 @@
     const streakSpacing=34;
     z=Math.ceil(distance/streakSpacing)*streakSpacing;
     for(;z<distance+Math.min(DRAW_DIST,520);z+=streakSpacing){
-      const d=z-distance;
-      const p=pointAtDistance(d);
+      const p=pointAtDistance(z-distance);
       if(p.p<.28)continue;
       const index=Math.floor(z/streakSpacing);
       for(const side of [-1,1]){
-        const spread=.76+(index%3)*.055;
-        const x=p.x+side*p.width*spread;
-        const len=lerp(1,17,p.p)*(0.45+1.7*speedFrac);
+        const x=p.x+side*p.width*(.76+(index%3)*.055);
+        const len=lerp(1,17,p.p)*(.45+1.7*speedFrac);
         ctx.strokeStyle=`rgba(126,175,118,${.18+.20*p.p})`;
         ctx.lineWidth=Math.max(1,p.p*2.2);
         ctx.beginPath();ctx.moveTo(x,p.y-len*.15);ctx.lineTo(x,p.y+len);ctx.stroke();
@@ -400,28 +341,19 @@
     const s=clamp(W/520,.72,1.28);
 
     ctx.save();ctx.translate(x,y);
-    // Show the direction the car is actually yawing, not heading error relative
-    // to the road. Understeer in a right bend therefore looks like a right-turning
-    // car running wide, rather than a car apparently steering left.
-    ctx.rotate(clamp(yawRate*.20,-.14,.14));
+    // Body attitude follows tyre force, not sideways velocity. In a fast right
+    // bend the car still points right while the road-frame acceleration carries it
+    // outward: visually this reads as understeer rather than steering the wrong way.
+    const steerVisual=clamp(tireAccel/MAX_LAT_ACCEL*.075,-.075,.075);
+    ctx.rotate(steerVisual);
 
-    ctx.fillStyle='rgba(0,0,0,.30)';
-    ctx.beginPath();ctx.ellipse(0,15*s,32*s,9*s,0,0,Math.PI*2);ctx.fill();
-
-    ctx.fillStyle='#d83f52';
-    ctx.beginPath();
-    ctx.moveTo(-29*s,10*s);ctx.lineTo(-23*s,-8*s);ctx.lineTo(-13*s,-22*s);
-    ctx.lineTo(13*s,-22*s);ctx.lineTo(23*s,-8*s);ctx.lineTo(29*s,10*s);
-    ctx.lineTo(24*s,20*s);ctx.lineTo(-24*s,20*s);ctx.closePath();ctx.fill();
-
-    ctx.fillStyle='#172535';
-    ctx.beginPath();ctx.moveTo(-12*s,-19*s);ctx.lineTo(12*s,-19*s);ctx.lineTo(18*s,-7*s);ctx.lineTo(-18*s,-7*s);ctx.closePath();ctx.fill();
-
-    ctx.fillStyle='#ffb05f';
-    ctx.fillRect(-23*s,5*s,8*s,5*s);ctx.fillRect(15*s,5*s,8*s,5*s);
+    ctx.fillStyle='rgba(0,0,0,.30)';ctx.beginPath();ctx.ellipse(0,15*s,32*s,9*s,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#d83f52';ctx.beginPath();
+    ctx.moveTo(-29*s,10*s);ctx.lineTo(-23*s,-8*s);ctx.lineTo(-13*s,-22*s);ctx.lineTo(13*s,-22*s);ctx.lineTo(23*s,-8*s);ctx.lineTo(29*s,10*s);ctx.lineTo(24*s,20*s);ctx.lineTo(-24*s,20*s);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#172535';ctx.beginPath();ctx.moveTo(-12*s,-19*s);ctx.lineTo(12*s,-19*s);ctx.lineTo(18*s,-7*s);ctx.lineTo(-18*s,-7*s);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#ffb05f';ctx.fillRect(-23*s,5*s,8*s,5*s);ctx.fillRect(15*s,5*s,8*s,5*s);
     ctx.fillStyle='#6b1527';ctx.fillRect(-18*s,14*s,36*s,4*s);
     ctx.fillStyle='#181a20';ctx.fillRect(-30*s,8*s,5*s,13*s);ctx.fillRect(25*s,8*s,5*s,13*s);
-
     if(pressed&&speed>95){
       const flick=(Math.sin(performance.now()*.035)+1)*.5;
       ctx.fillStyle=`rgba(255,205,103,${.40+.35*flick})`;
@@ -434,10 +366,8 @@
     if(started&&!gameOver)return;
     ctx.fillStyle='rgba(4,8,17,.48)';ctx.fillRect(0,0,W,H);
     ctx.textAlign='center';
-
     ctx.font=`900 ${clamp(W*.095,34,68)}px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace`;
     ctx.fillStyle='#fff';ctx.fillText('TINY RUN',W*.5,H*.30);
-
     ctx.font='700 13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
     ctx.fillStyle='rgba(255,255,255,.76)';
     if(gameOver){
@@ -447,25 +377,18 @@
       ctx.fillText('PRESS TO ACCELERATE',W*.5,H*.40);
       ctx.fillText('LIFT FOR CORNERS',W*.5,H*.40+23);
     }
-
     const barW=clamp(W*.46,190,330),barH=9,x=W*.5-barW/2,y=H*.58;
     ctx.strokeStyle='rgba(255,255,255,.48)';ctx.lineWidth=2;ctx.strokeRect(x,y,barW,barH);
-    ctx.fillStyle=startCharge>=1?'#ffd77a':'rgba(255,255,255,.88)';
-    ctx.fillRect(x+2,y+2,(barW-4)*startCharge,barH-4);
-
+    ctx.fillStyle=startCharge>=1?'#ffd77a':'rgba(255,255,255,.88)';ctx.fillRect(x+2,y+2,(barW-4)*startCharge,barH-4);
     ctx.font='700 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.fillStyle=startCharging?'#fff':'rgba(255,255,255,.72)';
-    ctx.fillText(startCharge>=1?'RELEASE':'HOLD TO START',W*.5,y+21);
+    ctx.fillStyle=startCharging?'#fff':'rgba(255,255,255,.72)';ctx.fillText(startCharge>=1?'RELEASE':'HOLD TO START',W*.5,y+21);
     ctx.textAlign='left';
   }
 
   function draw(){
     ctx.save();
     const speedShake=started&&!gameOver?clamp((speed-210)/95,0,1)*1.15:0;
-    if(shake>0||speedShake>0){
-      const s=shake+speedShake;
-      ctx.translate((Math.random()-.5)*s,(Math.random()-.5)*s);
-    }
+    if(shake>0||speedShake>0){const s=shake+speedShake;ctx.translate((Math.random()-.5)*s,(Math.random()-.5)*s);}
     drawBackground();drawRoad();drawCar();drawOverlay();
     ctx.restore();
   }
