@@ -36,7 +36,9 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   const DRIVEABLE_HALF=ROAD_HALF*(.62/.50);
   const CURVE_DRIFT_GAIN=.60;
   const STEER_FOLLOW_RATE=90;
-  const LINE_STEER_GAIN=.72;
+  // Keep only modest line correction. The driver points into the bend, but does
+  // not rescue a bad high-speed trajectory by winding on more and more steering.
+  const LINE_STEER_GAIN=.30;
   const MAX_STEER_RATE=180;
   const STEER_RESPONSE=.045;
   const ENTRY_OUTSIDE=.20;
@@ -461,15 +463,11 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     const urgent=timeLeft<2.5;
     const pulse=.72+.28*Math.sin(performance.now()*.020);
 
-    // A protected top strip keeps the complete HUD clear of mobile/browser edges.
+    // Time and score stay compact at the top; speed has its own unmistakable gauge.
     ctx.fillStyle='rgba(3,7,14,.48)';ctx.fillRect(0,hudY-7,W,38);
 
     ctx.font='800 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
     ctx.textBaseline='middle';
-    ctx.fillStyle='rgba(255,255,255,.94)';
-
-    ctx.textAlign='left';
-    ctx.fillText(`${Math.round(speed).toString().padStart(3,'0')} KM/H`,14,hudY);
 
     ctx.textAlign='center';
     ctx.fillStyle=urgent?`rgba(255,255,255,${pulse})`:'rgba(255,255,255,.94)';
@@ -492,6 +490,24 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
       ctx.fillText(`CHECKPOINT  +${CHECKPOINT_TIME}`,W*.5,barY+12);
     }
     ctx.textBaseline='alphabetic';ctx.textAlign='left';
+  }
+
+  function drawSpeedo(){
+    if(!started||gameOver)return;
+    const boxW=102,boxH=49;
+    const x=14,y=H-boxH-18;
+    ctx.fillStyle='rgba(3,7,14,.64)';ctx.fillRect(x,y,boxW,boxH);
+    ctx.strokeStyle='rgba(255,255,255,.34)';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,boxW-1,boxH-1);
+
+    ctx.textAlign='left';ctx.textBaseline='top';
+    ctx.font='700 9px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+    ctx.fillStyle='rgba(255,255,255,.66)';ctx.fillText('SPEED',x+8,y+6);
+
+    ctx.font='900 25px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+    ctx.fillStyle='#fff';ctx.fillText(Math.round(speed).toString().padStart(3,'0'),x+7,y+18);
+    ctx.font='800 9px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+    ctx.fillStyle='rgba(255,255,255,.78)';ctx.fillText('KM/H',x+69,y+30);
+    ctx.textBaseline='alphabetic';
   }
 
   function drawOverlay(){
@@ -522,7 +538,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     ctx.save();
     const speedShake=started&&!gameOver?clamp((speed-185)/110,0,1)*1.8:0;
     if(shake>0||speedShake>0){const s=shake+speedShake;ctx.translate((Math.random()-.5)*s,(Math.random()-.5)*s);}
-    drawBackground();drawRoad();drawCar();drawTimer();drawOverlay();
+    drawBackground();drawRoad();drawCar();drawTimer();drawSpeedo();drawOverlay();
     ctx.restore();
   }
 
