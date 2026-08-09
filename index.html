@@ -93,10 +93,12 @@
       const b=bends[i];
       if(q<=b.len){
         const prev=bends[(i-1+bends.length)%bends.length].k;
-        const next=bends[(i+1)%bends.length].k;
         const edge=Math.min(120,b.len*.30);
+        // Each boundary is blended exactly once, at the start of the new
+        // section. The old code also blended at the end of the previous
+        // section, which made curvature reverse and then jump back at every
+        // boundary (especially obvious when consecutive bends had opposite signs).
         if(q<edge)return lerp(prev,b.k,smooth(q/edge));
-        if(q>b.len-edge)return lerp(b.k,next,smooth((q-(b.len-edge))/edge));
         return b.k;
       }
       q-=b.len;
