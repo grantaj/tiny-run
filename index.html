@@ -466,48 +466,46 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
     const textY=hudTop+12;
     const barY=hudTop+25;
     const barH=5;
-    const sideW=Math.min(104,Math.max(82,W*.27));
-    const midW=Math.min(150,Math.max(98,W*.34));
-    const speedX=12;
-    const timeX=W*.5-midW*.5;
-    const scoreX=W-12;
+    const columnW=Math.min(110,Math.max(86,W*.24));
+    const speedCX=W*.18;
+    const timeCX=W*.50;
+    const scoreCX=W*.82;
     const speedFrac=clamp(speed/MAX_SPEED,0,1);
     const timeFrac=clamp(timeLeft/MAX_TIME,0,1);
     const urgent=timeLeft<2.5;
     const pulse=.72+.28*Math.sin(performance.now()*.020);
 
-    // Everything important lives together at the top, close to the road ahead.
     ctx.fillStyle='rgba(3,7,14,.58)';
     ctx.fillRect(0,hudTop-7,W,40);
 
-    // Use the same conservative canvas font for every HUD number. This avoids the
-    // Android rendering path that displayed the SPEED label but lost the large number.
+    // Speed is rendered exactly like time and score: same font, same baseline,
+    // same centred column. No edge anchoring or separate speedometer path.
     ctx.font='bold 12px monospace';
     ctx.textBaseline='middle';
-
-    ctx.textAlign='left';
-    ctx.fillStyle='#fff';
-    ctx.fillText(`SPEED ${Math.round(speed).toString().padStart(3,'0')}`,speedX,textY);
-
     ctx.textAlign='center';
-    ctx.fillStyle=urgent?`rgba(255,255,255,${pulse})`:'#fff';
-    ctx.fillText(`TIME ${Math.ceil(timeLeft)}`,W*.5,textY);
 
-    ctx.textAlign='right';
     ctx.fillStyle='#fff';
-    ctx.fillText(`SCORE ${Math.floor(score).toString().padStart(6,'0')}`,scoreX,textY);
+    ctx.fillText(`SPEED ${Math.round(speed)}`,speedCX,textY);
 
-    // Speed bar: left third.
+    ctx.fillStyle=urgent?`rgba(255,255,255,${pulse})`:'#fff';
+    ctx.fillText(`TIME ${Math.ceil(timeLeft)}`,timeCX,textY);
+
+    ctx.fillStyle='#fff';
+    ctx.fillText(`SCORE ${Math.floor(score).toString().padStart(6,'0')}`,scoreCX,textY);
+
+    const speedX=speedCX-columnW*.5;
+    const timeX=timeCX-columnW*.5;
+
+    // Speed bar uses exactly the same primitive background/fill construction as time.
     ctx.fillStyle='rgba(255,255,255,.20)';
-    ctx.fillRect(speedX,barY,sideW,barH);
+    ctx.fillRect(speedX,barY,columnW,barH);
     ctx.fillStyle='#ffd77a';
-    ctx.fillRect(speedX,barY,sideW*speedFrac,barH);
+    ctx.fillRect(speedX,barY,columnW*speedFrac,barH);
 
-    // Time bar: centre third.
     ctx.fillStyle='rgba(255,255,255,.20)';
-    ctx.fillRect(timeX,barY,midW,barH);
+    ctx.fillRect(timeX,barY,columnW,barH);
     ctx.fillStyle=urgent?`rgba(255,91,84,${pulse})`:'#ffd77a';
-    ctx.fillRect(timeX,barY,midW*timeFrac,barH);
+    ctx.fillRect(timeX,barY,columnW*timeFrac,barH);
 
     if(checkpointFlash>0){
       ctx.textAlign='center';
