@@ -470,8 +470,12 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     ctx.fillStyle=urgent?`rgba(255,255,255,${pulse})`:'rgba(255,255,255,.88)';
     ctx.fillText(`TIME ${Math.ceil(timeLeft)}`,W*.5,y+12);
 
-    ctx.textAlign='right';
+    // Speed, time and score form the minimal arcade HUD.
+    ctx.textAlign='left';
     ctx.fillStyle='rgba(255,255,255,.90)';
+    ctx.fillText(`${Math.round(speed).toString().padStart(3,'0')} KM/H`,12,11);
+
+    ctx.textAlign='right';
     ctx.fillText(`SCORE ${Math.floor(score).toString().padStart(6,'0')}`,W-12,11);
 
     if(checkpointFlash>0){
