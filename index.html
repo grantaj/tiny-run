@@ -25,16 +25,16 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   const MIN_SPEED=48;
   const MAX_SPEED=305;
 
-  // Pseudo-3D arcade handling, deliberately closer to Pole Position / OutRun
-  // descendants than to a world-space vehicle simulation. The road curvature
-  // pushes the player's lateral road coordinate outward. Automatic steering can
-  // oppose that push only at a finite rate. There is no yaw, lateral velocity,
-  // grip mode, or recenter operation.
+  // One-button arcade handling. Curvature pushes the road laterally under the
+  // car. The button now changes cornering authority directly: power makes the
+  // car reluctant to turn, while lifting gives strong turn-in. This makes the
+  // player's button timing control the line rather than merely changing speed.
   const ROAD_HALF=116;
   const CAR_HALF=12;
   const CURVE_DRIFT_GAIN=.55;
-  const MAX_STEER_RATE=85;
-  const CENTER_GAIN=.55;
+  const THROTTLE_STEER_RATE=62;
+  const LIFT_STEER_RATE=175;
+  const CENTER_GAIN=.45;
 
   const ROAD_CURVE_SCALE=.00155;
   const DRAW_DIST=1080;
@@ -158,26 +158,26 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     else accel=-7-.00008*speed*speed;
     speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
 
-    // Classic pseudo-3D racer logic: the bend moves playerX toward the outside,
-    // while steering directly moves playerX the other way. There is no second
-    // state variable and therefore no hidden lateral momentum or snap-to-centre.
+    // The road tries to walk sideways under the car in a bend. This is the same
+    // simple pseudo-3D playerX idea as before, but the player's button now changes
+    // the available steering authority immediately, not indirectly via speed.
     const curve=roadRawCurvature(distance);
     curveDrift=-curve*speed*CURVE_DRIFT_GAIN;
 
     const lowSpeedScale=clamp(speed/110,.55,1);
-    const maxSteer=MAX_STEER_RATE*lowSpeedScale;
+    const steerLimit=(pressed?THROTTLE_STEER_RATE:LIFT_STEER_RATE)*lowSpeedScale;
 
-    // First cancel the bend. Only unused steering authority can bring an existing
-    // lateral error back toward centre, so recovery cannot be instantaneous.
-    const followSteer=clamp(-curveDrift,-maxSteer,maxSteer);
-    const spare=Math.max(0,maxSteer-Math.abs(followSteer));
+    // Steering first follows the bend. Any authority left over slowly restores
+    // an existing lateral error. There is still no recenter mode or hidden state.
+    const followSteer=clamp(-curveDrift,-steerLimit,steerLimit);
+    const spare=Math.max(0,steerLimit-Math.abs(followSteer));
     const centreSteer=clamp(-lateral*CENTER_GAIN,-spare,spare);
     steerRate=followSteer+centreSteer;
-    steerFraction=maxSteer>0?steerRate/maxSteer:0;
+    steerFraction=LIFT_STEER_RATE>0?steerRate/LIFT_STEER_RATE:0;
 
     const netLateralRate=curveDrift+steerRate;
     lateral+=netLateralRate*dt;
-    understeer=clamp((Math.abs(curveDrift)-maxSteer)/Math.max(maxSteer,1),0,1.5);
+    understeer=clamp((Math.abs(curveDrift)-steerLimit)/Math.max(steerLimit,1),0,1.5);
     distance+=speed*dt;
     score+=speed*dt*.10;
 
@@ -341,7 +341,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     const s=clamp(W/520,.72,1.28);
 
     ctx.save();ctx.translate(x,y);
-    ctx.rotate(clamp(steerFraction*.055,-.055,.055));
+    ctx.rotate(clamp(steerFraction*.075,-.075,.075));
 
     ctx.fillStyle='rgba(0,0,0,.30)';ctx.beginPath();ctx.ellipse(0,15*s,32*s,9*s,0,0,Math.PI*2);ctx.fill();
     ctx.fillStyle='#d83f52';ctx.beginPath();
@@ -378,8 +378,8 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
       ctx.fillText('OFF ROAD',W*.5,H*.40);
       ctx.fillText(`SCORE ${Math.floor(score)}   BEST ${Math.floor(best)}`,W*.5,H*.40+23);
     }else{
-      ctx.fillText('PRESS TO ACCELERATE',W*.5,H*.40);
-      ctx.fillText('LIFT FOR CORNERS',W*.5,H*.40+23);
+      ctx.fillText('HOLD TO ACCELERATE',W*.5,H*.40);
+      ctx.fillText('LIFT TO TURN IN',W*.5,H*.40+23);
     }
     const barW=clamp(W*.46,190,330),barH=9,x=W*.5-barW/2,y=H*.58;
     ctx.strokeStyle='rgba(255,255,255,.48)';ctx.lineWidth=2;ctx.strokeRect(x,y,barW,barH);
