@@ -25,19 +25,11 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
   const MIN_SPEED=48;
   const MAX_SPEED=305;
 
-  // The automatic driver chooses a plausible racing line from the road geometry.
-  // Throttle never changes that steering intent. Instead speed determines the
-  // trajectory: the road walks outward faster under a fast car, so the same
-  // steering runs wide; a slower car traces a progressively tighter line.
   const ROAD_HALF=108;
   const CAR_HALF=12;
-  // The asphalt is drawn to .50 road width and the red/white kerb to .62.
-  // Collision therefore happens at the outside of the kerb, not the asphalt.
   const DRIVEABLE_HALF=ROAD_HALF*(.62/.50);
   const CURVE_DRIFT_GAIN=.60;
   const STEER_FOLLOW_RATE=90;
-  // Keep only modest line correction. The driver points into the bend, but does
-  // not rescue a bad high-speed trajectory by winding on more and more steering.
   const LINE_STEER_GAIN=.30;
   const MAX_STEER_RATE=180;
   const STEER_RESPONSE=.045;
@@ -46,23 +38,20 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
   const STRAIGHT_CENTER_RATE=24;
 
   const ROAD_CURVE_SCALE=.00155;
-  // A shorter visual depth makes roadside references sweep past more quickly.
   const DRAW_DIST=900;
   const ROAD_SEG=20;
   const CHECKPOINT_SPACING=1800;
 
-  // The first gate is reachable with a little margin. Thereafter a checkpoint
-  // buys roughly one clean section, not enough to absorb repeated reckless crashes.
   const START_TIME=9.2;
   const CHECKPOINT_TIME=6.6;
   const MAX_TIME=8.6;
 
-  // Most off-road departures should be recoverable slowdowns. Only genuinely
-  // flat-out departures trigger the spectacular spin/crash.
   const OFFROAD_RECOVERY=.65;
   const OFFROAD_SPEED=76;
   const CRASH_SPEED=250;
-  const CRASH_RECOVERY=1.65;
+  const CRASH_RECOVERY=1.0;
+  const CRASH_ENTRY_SPEED=90;
+  const CRASH_MIN_SPEED=58;
 
   let pressed=false,started=false,gameOver=false;
   let startCharging=false,startCharge=0;
@@ -130,8 +119,6 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
 
   function roadCurvature(z){return roadRawCurvature(z)*ROAD_CURVE_SCALE;}
 
-  // A short preview lets the automatic driver move toward the outside before
-  // turn-in. Once the bend reaches the car, current curvature owns the line.
   function entryCurve(z){
     return .65*roadRawCurvature(z+55)
          + .35*roadRawCurvature(z+120);
@@ -189,7 +176,7 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
     lateral=clamp(lateral,-limit,limit);
 
     if(impactSpeed>=CRASH_SPEED){
-      speed=Math.min(speed,32);
+      speed=Math.min(speed,CRASH_ENTRY_SPEED);
       offroadCooldown=CRASH_RECOVERY;
       crashTimer=CRASH_RECOVERY;
       shake=18;
@@ -218,7 +205,7 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
     if(crashTimer>0)crashTimer=Math.max(0,crashTimer-dt);
 
     if(crashTimer>0){
-      speed=Math.max(0,speed-180*dt);
+      speed=Math.max(CRASH_MIN_SPEED,speed-30*dt);
     }else{
       let accel;
       if(offroadCooldown>0)accel=-18-.00008*speed*speed;
@@ -229,10 +216,6 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
 
     const curve=roadRawCurvature(distance);
     const preview=entryCurve(distance);
-
-    // Road-relative motion: speed is the player's steering control. The bend
-    // moves underneath the car faster as speed rises; automatic steering itself
-    // does not know or care whether the throttle button is currently held.
     curveDrift=-curve*speed*CURVE_DRIFT_GAIN;
 
     const inCorner=Math.abs(curve)>.06;
@@ -405,8 +388,6 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
       }
     }
 
-    // Dense near-field verge marks are almost invisible at low speed but become
-    // long optical-flow streaks when travelling flat out.
     const streakSpacing=24;
     let z3=Math.ceil(distance/streakSpacing)*streakSpacing;
     for(;z3<distance+Math.min(DRAW_DIST,470);z3+=streakSpacing){
@@ -478,8 +459,6 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
     ctx.fillStyle='rgba(3,7,14,.58)';
     ctx.fillRect(0,hudTop-7,W,40);
 
-    // Speed is rendered exactly like time and score: same font, same baseline,
-    // same centred column. No edge anchoring or separate speedometer path.
     ctx.font='bold 12px monospace';
     ctx.textBaseline='middle';
     ctx.textAlign='center';
@@ -496,7 +475,6 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
     const speedX=speedCX-columnW*.5;
     const timeX=timeCX-columnW*.5;
 
-    // Speed bar uses exactly the same primitive background/fill construction as time.
     ctx.fillStyle='rgba(255,255,255,.20)';
     ctx.fillRect(speedX,barY,columnW,barH);
     ctx.fillStyle='#ffd77a';
@@ -550,7 +528,6 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
     drawBackground();drawRoad();drawCar();
     ctx.restore();
 
-    // Fixed-screen UI is never affected by camera shake or world transforms.
     drawHUD();drawOverlay();
   }
 
