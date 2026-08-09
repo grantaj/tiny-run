@@ -30,12 +30,11 @@
   const CAR_HALF=12;
   const MAX_LAT_ACCEL=62;
 
-  // Road-frame lateral dynamics. The road asks for v^2*k lateral acceleration;
-  // the tyres can only supply MAX_LAT_ACCEL. Any deficit pushes the car outward.
-  // Spare grip is used by a heavily damped line-following term to recover centre.
-  // There is no yaw/steering inertia state, so there is nothing boat-like to ring.
-  const LINE_OMEGA=.62;
-  const LINE_DAMPING=1.25;
+  // Normal steering is kinematic, not dynamic: if the tyres have enough grip,
+  // the car simply follows the road. Physics begins only when cornering demand
+  // exceeds grip, at which point the deficit creates outward understeer.
+  const RECENTER_RATE=9.0;
+  const SLIP_DRAG=1.15;
 
   const DRAW_DIST=1080;
   const ROAD_SEG=28;
@@ -44,7 +43,7 @@
   let pressed=false,started=false,gameOver=false;
   let startCharging=false,startCharge=0;
   let speed=86,distance=0,score=0,best=+(localStorage.tinyRunBest||0);
-  let lateral=0,lateralV=0,tireAccel=0;
+  let lateral=0,lateralV=0,slipping=false;
   let shake=0,nextCheckpoint=CHECKPOINT_SPACING;
   let roadPoints=[];
 
@@ -102,7 +101,7 @@
 
   function reset(){
     pressed=false;started=false;gameOver=false;startCharging=false;startCharge=0;
-    speed=86;distance=0;score=0;lateral=0;lateralV=0;tireAccel=0;
+    speed=86;distance=0;score=0;lateral=0;lateralV=0;slipping=false;
     shake=0;nextCheckpoint=CHECKPOINT_SPACING;
   }
 
@@ -162,30 +161,31 @@
     speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
 
     const kRoad=roadCurvature(distance);
-
-    // This is the actual physics game: following the road centre at speed v needs
-    // lateral acceleration v^2*k. If the tyres cannot provide it, the remaining
-    // acceleration acts outward in the road frame and the car runs wide.
     const roadAccel=speed*speed*kRoad;
+    const demand=Math.abs(roadAccel);
 
-    // A damped line follower spends only *spare tyre grip* on getting back to the
-    // centre. It cannot create extra grip and it has no delayed steering state.
-    const lineCorrection=
-      -(LINE_OMEGA*LINE_OMEGA)*lateral
-      -2*LINE_DAMPING*LINE_OMEGA*lateralV;
-    const requestedAccel=roadAccel+lineCorrection;
-    tireAccel=clamp(requestedAccel,-MAX_LAT_ACCEL,MAX_LAT_ACCEL);
+    if(demand<=MAX_LAT_ACCEL){
+      // Enough grip: steering is exact. There is deliberately no floating,
+      // heading lag, sway or steering controller here. Existing understeer is
+      // pulled back monotonically once grip is available again.
+      slipping=false;
+      lateralV=0;
+      lateral*=Math.exp(-RECENTER_RATE*dt);
+      if(Math.abs(lateral)<.02)lateral=0;
+    }else{
+      // Not enough grip: only the acceleration shortfall matters. Positive road
+      // curvature bends right, so its outside is left (negative lateral), and vice versa.
+      slipping=true;
+      const outside=-Math.sign(kRoad);
+      const excess=demand-MAX_LAT_ACCEL;
+      if(lateralV*outside<0)lateralV=0;
+      lateralV+=outside*excess*dt;
+      lateralV*=Math.exp(-SLIP_DRAG*dt);
+      lateral+=lateralV*dt;
+    }
 
-    const relativeAccel=tireAccel-roadAccel;
-    lateralV+=relativeAccel*dt;
-    lateral+=lateralV*dt;
     distance+=speed*dt;
     score+=speed*dt*.10;
-
-    // Remove only microscopic numerical residue; real lateral motion is retained.
-    if(Math.abs(kRoad)<1e-7&&Math.abs(lateral)<.02&&Math.abs(lateralV)<.02){
-      lateral=0;lateralV=0;tireAccel=0;
-    }
 
     if(Math.abs(lateral)>=ROAD_HALF-CAR_HALF){crash();return;}
 
@@ -341,11 +341,8 @@
     const s=clamp(W/520,.72,1.28);
 
     ctx.save();ctx.translate(x,y);
-    // Body attitude follows tyre force, not sideways velocity. In a fast right
-    // bend the car still points right while the road-frame acceleration carries it
-    // outward: visually this reads as understeer rather than steering the wrong way.
-    const steerVisual=clamp(tireAccel/MAX_LAT_ACCEL*.075,-.075,.075);
-    ctx.rotate(steerVisual);
+    // Keep the car visually aligned with the road. Steering is automatic and is
+    // not gameplay; lateral displacement alone communicates understeer.
 
     ctx.fillStyle='rgba(0,0,0,.30)';ctx.beginPath();ctx.ellipse(0,15*s,32*s,9*s,0,0,Math.PI*2);ctx.fill();
     ctx.fillStyle='#d83f52';ctx.beginPath();
