@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>Tiny Run</title>
 <style>
-html,body{margin:0;height:100%;background:#07131d;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#fff}
-canvas{display:block;width:100vw;height:100vh;touch-action:none}
+html,body{margin:0;width:100%;height:100%;background:#07131d;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#fff}
+canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
 </style>
 </head>
 <body>
@@ -76,8 +76,13 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 
   function resize(){
     DPR=Math.min(2,devicePixelRatio||1);
-    W=innerWidth;H=innerHeight;
-    canvas.width=W*DPR;canvas.height=H*DPR;
+    const vv=window.visualViewport;
+    W=Math.round(vv?vv.width:innerWidth);
+    H=Math.round(vv?vv.height:innerHeight);
+    canvas.style.width=`${W}px`;
+    canvas.style.height=`${H}px`;
+    canvas.width=Math.round(W*DPR);
+    canvas.height=Math.round(H*DPR);
     ctx.setTransform(DPR,0,0,DPR,0,0);
     skyGradient=ctx.createLinearGradient(0,0,0,horizonY()+76);
     skyGradient.addColorStop(0,'#17173f');
@@ -85,6 +90,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     skyGradient.addColorStop(1,'#f6a06a');
   }
   addEventListener('resize',resize);
+  if(window.visualViewport)visualViewport.addEventListener('resize',resize);
 
   const bends=[
     {len:620,k:0},
@@ -463,7 +469,6 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     const urgent=timeLeft<2.5;
     const pulse=.72+.28*Math.sin(performance.now()*.020);
 
-    // Time and score stay compact at the top; speed has its own unmistakable gauge.
     ctx.fillStyle='rgba(3,7,14,.48)';ctx.fillRect(0,hudY-7,W,38);
 
     ctx.font='800 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
@@ -495,18 +500,18 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   function drawSpeedo(){
     if(!started||gameOver)return;
     const boxW=102,boxH=49;
-    const x=14,y=H-boxH-18;
-    ctx.fillStyle='rgba(3,7,14,.64)';ctx.fillRect(x,y,boxW,boxH);
-    ctx.strokeStyle='rgba(255,255,255,.34)';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,boxW-1,boxH-1);
+    const x=14,y=Math.max(78,H-boxH-24);
+    ctx.fillStyle='rgba(3,7,14,.72)';ctx.fillRect(x,y,boxW,boxH);
+    ctx.strokeStyle='rgba(255,255,255,.42)';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,boxW-1,boxH-1);
 
     ctx.textAlign='left';ctx.textBaseline='top';
     ctx.font='700 9px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.fillStyle='rgba(255,255,255,.66)';ctx.fillText('SPEED',x+8,y+6);
+    ctx.fillStyle='rgba(255,255,255,.70)';ctx.fillText('SPEED',x+8,y+6);
 
     ctx.font='900 25px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
     ctx.fillStyle='#fff';ctx.fillText(Math.round(speed).toString().padStart(3,'0'),x+7,y+18);
     ctx.font='800 9px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.fillStyle='rgba(255,255,255,.78)';ctx.fillText('KM/H',x+69,y+30);
+    ctx.fillStyle='rgba(255,255,255,.82)';ctx.fillText('KM/H',x+69,y+30);
     ctx.textBaseline='alphabetic';
   }
 
@@ -538,8 +543,11 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     ctx.save();
     const speedShake=started&&!gameOver?clamp((speed-185)/110,0,1)*1.8:0;
     if(shake>0||speedShake>0){const s=shake+speedShake;ctx.translate((Math.random()-.5)*s,(Math.random()-.5)*s);}
-    drawBackground();drawRoad();drawCar();drawTimer();drawSpeedo();drawOverlay();
+    drawBackground();drawRoad();drawCar();
     ctx.restore();
+
+    // Fixed-screen UI is never affected by camera shake or world transforms.
+    drawTimer();drawSpeedo();drawOverlay();
   }
 
   let last=performance.now();
