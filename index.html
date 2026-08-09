@@ -25,16 +25,16 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   const MIN_SPEED=48;
   const MAX_SPEED=305;
 
-  // One-button arcade handling. Curvature pushes the road laterally under the
-  // car. The button now changes cornering authority directly: power makes the
-  // car reluctant to turn, while lifting gives strong turn-in. This makes the
-  // player's button timing control the line rather than merely changing speed.
-  const ROAD_HALF=116;
+  // One-button arcade handling. The road under the car creates the outward push,
+  // but steering looks ahead into the visible road. Lifting before the corner
+  // therefore starts turn-in before the car physically reaches the bend.
+  const ROAD_HALF=108;
   const CAR_HALF=12;
-  const CURVE_DRIFT_GAIN=.55;
-  const THROTTLE_STEER_RATE=62;
-  const LIFT_STEER_RATE=175;
-  const CENTER_GAIN=.45;
+  const CURVE_DRIFT_GAIN=.60;
+  const THROTTLE_STEER_RATE=52;
+  const LIFT_STEER_RATE=180;
+  const STEER_RESPONSE=.10;
+  const STRAIGHT_CENTER_RATE=22;
 
   const ROAD_CURVE_SCALE=.00155;
   const DRAW_DIST=1080;
@@ -100,6 +100,14 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 
   function roadCurvature(z){return roadRawCurvature(z)*ROAD_CURVE_SCALE;}
 
+  // Weighted look-ahead roughly spans the near visible road. This is what makes
+  // an early lift feel connected to the corner the player is looking at.
+  function steeringCurve(z){
+    return .50*roadRawCurvature(z+55)
+         + .32*roadRawCurvature(z+130)
+         + .18*roadRawCurvature(z+220);
+  }
+
   function reset(){
     pressed=false;started=false;gameOver=false;startCharging=false;startCharge=0;
     speed=86;distance=0;score=0;lateral=0;steerRate=0;curveDrift=0;understeer=0;steerFraction=0;
@@ -158,26 +166,32 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     else accel=-7-.00008*speed*speed;
     speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
 
-    // The road tries to walk sideways under the car in a bend. This is the same
-    // simple pseudo-3D playerX idea as before, but the player's button now changes
-    // the available steering authority immediately, not indirectly via speed.
+    // The current bend supplies the outward road drift.
     const curve=roadRawCurvature(distance);
+    const aheadCurve=steeringCurve(distance);
     curveDrift=-curve*speed*CURVE_DRIFT_GAIN;
 
     const lowSpeedScale=clamp(speed/110,.55,1);
     const steerLimit=(pressed?THROTTLE_STEER_RATE:LIFT_STEER_RATE)*lowSpeedScale;
 
-    // Steering first follows the bend. Any authority left over slowly restores
-    // an existing lateral error. There is still no recenter mode or hidden state.
-    const followSteer=clamp(-curveDrift,-steerLimit,steerLimit);
-    const spare=Math.max(0,steerLimit-Math.abs(followSteer));
-    const centreSteer=clamp(-lateral*CENTER_GAIN,-spare,spare);
-    steerRate=followSteer+centreSteer;
+    let desiredSteer;
+    if(Math.abs(aheadCurve)>.04){
+      // While a corner is visible, all steering is committed to that corner.
+      // There is deliberately no automatic clean-up of a bad lateral line here.
+      desiredSteer=clamp(aheadCurve*speed*CURVE_DRIFT_GAIN,-steerLimit,steerLimit);
+    }else{
+      // Only a genuine straight slowly recentres the car.
+      desiredSteer=clamp(-lateral*.30,-STRAIGHT_CENTER_RATE,STRAIGHT_CENTER_RATE);
+    }
+
+    // Small first-order rack response: enough to feel like steering, too fast to
+    // create the old boat-like yaw/lateral oscillation.
+    steerRate+=(desiredSteer-steerRate)*(1-Math.exp(-dt/STEER_RESPONSE));
     steerFraction=LIFT_STEER_RATE>0?steerRate/LIFT_STEER_RATE:0;
 
     const netLateralRate=curveDrift+steerRate;
     lateral+=netLateralRate*dt;
-    understeer=clamp((Math.abs(curveDrift)-steerLimit)/Math.max(steerLimit,1),0,1.5);
+    understeer=clamp(Math.abs(netLateralRate)/Math.max(Math.abs(curveDrift),40),0,1.5);
     distance+=speed*dt;
     score+=speed*dt*.10;
 
@@ -351,7 +365,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     ctx.fillStyle='#6b1527';ctx.fillRect(-18*s,14*s,36*s,4*s);
     ctx.fillStyle='#181a20';ctx.fillRect(-30*s,8*s,5*s,13*s);ctx.fillRect(25*s,8*s,5*s,13*s);
 
-    if(understeer>0){
+    if(understeer>.08){
       const a=.10+.25*clamp(understeer,0,1);
       ctx.strokeStyle=`rgba(22,22,25,${a})`;ctx.lineWidth=2*s;
       ctx.beginPath();ctx.moveTo(-20*s,20*s);ctx.lineTo(-20*s,28*s);ctx.stroke();
@@ -379,7 +393,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
       ctx.fillText(`SCORE ${Math.floor(score)}   BEST ${Math.floor(best)}`,W*.5,H*.40+23);
     }else{
       ctx.fillText('HOLD TO ACCELERATE',W*.5,H*.40);
-      ctx.fillText('LIFT TO TURN IN',W*.5,H*.40+23);
+      ctx.fillText('LIFT BEFORE CORNERS',W*.5,H*.40+23);
     }
     const barW=clamp(W*.46,190,330),barH=9,x=W*.5-barW/2,y=H*.58;
     ctx.strokeStyle='rgba(255,255,255,.48)';ctx.lineWidth=2;ctx.strokeRect(x,y,barW,barH);
