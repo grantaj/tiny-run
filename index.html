@@ -25,23 +25,23 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   const MIN_SPEED=48;
   const MAX_SPEED=305;
 
-  // One-button arcade handling. The road under the car creates the outward push.
-  // Look-ahead is only used to begin turn-in before a bend; once in a bend the
-  // steering follows the curvature actually under the car.
+  // The automatic driver chooses a plausible racing line from the road geometry.
+  // Throttle never changes that steering intent. Instead speed determines the
+  // trajectory: the road walks outward faster under a fast car, so the same
+  // steering runs wide; a slower car traces a progressively tighter line.
   const ROAD_HALF=108;
   const CAR_HALF=12;
   // The asphalt is drawn to .50 road width and the red/white kerb to .62.
   // Collision therefore happens at the outside of the kerb, not the asphalt.
   const DRIVEABLE_HALF=ROAD_HALF*(.62/.50);
   const CURVE_DRIFT_GAIN=.60;
-  const THROTTLE_STEER_RATE=72;
-  const LIFT_STEER_RATE=190;
-  const THROTTLE_TURN_FACTOR=.68;
-  const LIFT_TURN_FACTOR=1.15;
-  const ENTRY_TURN_FACTOR=.42;
-  const THROTTLE_STEER_RESPONSE=.075;
-  const LIFT_STEER_RESPONSE=.025;
-  const STRAIGHT_CENTER_RATE=20;
+  const STEER_FOLLOW_RATE=90;
+  const LINE_STEER_GAIN=.72;
+  const MAX_STEER_RATE=180;
+  const STEER_RESPONSE=.045;
+  const ENTRY_OUTSIDE=.20;
+  const APEX_INSIDE=.38;
+  const STRAIGHT_CENTER_RATE=24;
 
   const ROAD_CURVE_SCALE=.00155;
   const DRAW_DIST=1080;
@@ -107,8 +107,8 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 
   function roadCurvature(z){return roadRawCurvature(z)*ROAD_CURVE_SCALE;}
 
-  // Short preview used only while the car is still essentially on a straight.
-  // Once the bend reaches the car, current curvature completely takes over.
+  // A short preview lets the automatic driver move toward the outside before
+  // turn-in. Once the bend reaches the car, current curvature owns the line.
   function entryCurve(z){
     return .65*roadRawCurvature(z+55)
          + .35*roadRawCurvature(z+120);
@@ -174,38 +174,42 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 
     const curve=roadRawCurvature(distance);
     const preview=entryCurve(distance);
+
+    // Road-relative motion: speed is the player's steering control. The bend
+    // moves underneath the car faster as speed rises; automatic steering itself
+    // does not know or care whether the throttle button is currently held.
     curveDrift=-curve*speed*CURVE_DRIFT_GAIN;
 
-    // Power loses some steering authority at very low speed, but lifting always
-    // gets the full corrective rack. Slowing down must never make the car harder
-    // to turn when the player is explicitly asking it to turn in.
-    const throttleScale=clamp(speed/110,.55,1);
-    const steerLimit=pressed?THROTTLE_STEER_RATE*throttleScale:LIFT_STEER_RATE;
-
-    let desiredSteer;
     const inCorner=Math.abs(curve)>.06;
+    const approaching=!inCorner&&Math.abs(preview)>.05;
+    let desiredSteer;
 
     if(inCorner){
-      // Mid-corner steering belongs to the bend under the car, never the next
-      // piece of road. Power opens the arc but still retains substantial turn;
-      // lifting deliberately turns farther inward than neutral road-following.
-      const factor=pressed?THROTTLE_TURN_FACTOR:LIFT_TURN_FACTOR;
-      desiredSteer=clamp(curve*speed*CURVE_DRIFT_GAIN*factor,-steerLimit,steerLimit);
-    }else if(!pressed&&Math.abs(preview)>.05){
-      // A lift on approach starts a modest, visible turn-in before the bend.
-      // Throttle does not pre-steer: staying on power commits you to a later entry.
-      desiredSteer=clamp(preview*speed*CURVE_DRIFT_GAIN*ENTRY_TURN_FACTOR,-steerLimit,steerLimit);
+      // Follow the bend while aiming progressively toward the inside. Because the
+      // feed-forward steering is fixed for a given road curvature, speed selects
+      // the resulting line: slow = tight, medium = balanced, fast = wide.
+      const strength=clamp(Math.abs(curve)/1.3,0,1);
+      const target=Math.sign(curve)*ROAD_HALF*lerp(.12,APEX_INSIDE,strength);
+      desiredSteer=clamp(
+        curve*STEER_FOLLOW_RATE+(target-lateral)*LINE_STEER_GAIN,
+        -MAX_STEER_RATE,MAX_STEER_RATE
+      );
+    }else if(approaching){
+      // Set up a simple racing line by drifting toward the outside before the
+      // bend, while applying only a little preview steering into the corner.
+      const strength=clamp(Math.abs(preview)/1.3,0,1);
+      const target=-Math.sign(preview)*ROAD_HALF*ENTRY_OUTSIDE*strength;
+      desiredSteer=clamp(
+        preview*STEER_FOLLOW_RATE*.20+(target-lateral)*LINE_STEER_GAIN,
+        -MAX_STEER_RATE,MAX_STEER_RATE
+      );
     }else{
-      // Only true straights clean up the line, and do it slowly.
-      desiredSteer=clamp(-lateral*.26,-STRAIGHT_CENTER_RATE,STRAIGHT_CENTER_RATE);
+      desiredSteer=clamp(-lateral*.28,-STRAIGHT_CENTER_RATE,STRAIGHT_CENTER_RATE);
     }
 
-    // Lifting must feel like an immediate steering command: fast rack response
-    // on lift, slower response under power so acceleration still opens the line
-    // progressively rather than snapping the car straight.
-    const steerResponse=pressed?THROTTLE_STEER_RESPONSE:LIFT_STEER_RESPONSE;
-    steerRate+=(desiredSteer-steerRate)*(1-Math.exp(-dt/steerResponse));
-    steerFraction=LIFT_STEER_RATE>0?steerRate/LIFT_STEER_RATE:0;
+    // One continuous steering rack. No throttle-dependent steering mode.
+    steerRate+=(desiredSteer-steerRate)*(1-Math.exp(-dt/STEER_RESPONSE));
+    steerFraction=MAX_STEER_RATE>0?steerRate/MAX_STEER_RATE:0;
 
     const netLateralRate=curveDrift+steerRate;
     lateral+=netLateralRate*dt;
@@ -412,7 +416,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
       ctx.fillText(`SCORE ${Math.floor(score)}   BEST ${Math.floor(best)}`,W*.5,H*.40+23);
     }else{
       ctx.fillText('HOLD TO ACCELERATE',W*.5,H*.40);
-      ctx.fillText('LIFT TO TURN IN',W*.5,H*.40+23);
+      ctx.fillText('LIFT TO TIGHTEN LINE',W*.5,H*.40+23);
     }
     const barW=clamp(W*.46,190,330),barH=9,x=W*.5-barW/2,y=H*.58;
     ctx.strokeStyle='rgba(255,255,255,.48)';ctx.lineWidth=2;ctx.strokeRect(x,y,barW,barH);
