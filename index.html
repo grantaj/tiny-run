@@ -25,16 +25,19 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   const MIN_SPEED=48;
   const MAX_SPEED=305;
 
-  // One-button arcade handling. The road under the car creates the outward push,
-  // but steering looks ahead into the visible road. Lifting before the corner
-  // therefore starts turn-in before the car physically reaches the bend.
+  // One-button arcade handling. The road under the car creates the outward push.
+  // Look-ahead is only used to begin turn-in before a bend; once in a bend the
+  // steering follows the curvature actually under the car.
   const ROAD_HALF=108;
   const CAR_HALF=12;
   const CURVE_DRIFT_GAIN=.60;
-  const THROTTLE_STEER_RATE=52;
-  const LIFT_STEER_RATE=180;
-  const STEER_RESPONSE=.10;
-  const STRAIGHT_CENTER_RATE=22;
+  const THROTTLE_STEER_RATE=55;
+  const LIFT_STEER_RATE=190;
+  const THROTTLE_TURN_FACTOR=.55;
+  const LIFT_TURN_FACTOR=1.15;
+  const ENTRY_TURN_FACTOR=.42;
+  const STEER_RESPONSE=.075;
+  const STRAIGHT_CENTER_RATE=20;
 
   const ROAD_CURVE_SCALE=.00155;
   const DRAW_DIST=1080;
@@ -100,12 +103,11 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 
   function roadCurvature(z){return roadRawCurvature(z)*ROAD_CURVE_SCALE;}
 
-  // Weighted look-ahead roughly spans the near visible road. This is what makes
-  // an early lift feel connected to the corner the player is looking at.
-  function steeringCurve(z){
-    return .50*roadRawCurvature(z+55)
-         + .32*roadRawCurvature(z+130)
-         + .18*roadRawCurvature(z+220);
+  // Short preview used only while the car is still essentially on a straight.
+  // Once the bend reaches the car, current curvature completely takes over.
+  function entryCurve(z){
+    return .65*roadRawCurvature(z+55)
+         + .35*roadRawCurvature(z+120);
   }
 
   function reset(){
@@ -166,32 +168,40 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     else accel=-7-.00008*speed*speed;
     speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
 
-    // The current bend supplies the outward road drift.
     const curve=roadRawCurvature(distance);
-    const aheadCurve=steeringCurve(distance);
+    const preview=entryCurve(distance);
     curveDrift=-curve*speed*CURVE_DRIFT_GAIN;
 
     const lowSpeedScale=clamp(speed/110,.55,1);
     const steerLimit=(pressed?THROTTLE_STEER_RATE:LIFT_STEER_RATE)*lowSpeedScale;
 
     let desiredSteer;
-    if(Math.abs(aheadCurve)>.04){
-      // While a corner is visible, all steering is committed to that corner.
-      // There is deliberately no automatic clean-up of a bad lateral line here.
-      desiredSteer=clamp(aheadCurve*speed*CURVE_DRIFT_GAIN,-steerLimit,steerLimit);
+    const inCorner=Math.abs(curve)>.06;
+
+    if(inCorner){
+      // Mid-corner steering belongs to the bend under the car, never the next
+      // piece of road. Power deliberately understeers; lifting deliberately
+      // turns farther inward than the neutral road-following rate.
+      const factor=pressed?THROTTLE_TURN_FACTOR:LIFT_TURN_FACTOR;
+      desiredSteer=clamp(curve*speed*CURVE_DRIFT_GAIN*factor,-steerLimit,steerLimit);
+    }else if(!pressed&&Math.abs(preview)>.05){
+      // A lift on approach starts a modest, visible turn-in before the bend.
+      // Throttle does not pre-steer: staying on power commits you to a later entry.
+      desiredSteer=clamp(preview*speed*CURVE_DRIFT_GAIN*ENTRY_TURN_FACTOR,-steerLimit,steerLimit);
     }else{
-      // Only a genuine straight slowly recentres the car.
-      desiredSteer=clamp(-lateral*.30,-STRAIGHT_CENTER_RATE,STRAIGHT_CENTER_RATE);
+      // Only true straights clean up the line, and do it slowly.
+      desiredSteer=clamp(-lateral*.26,-STRAIGHT_CENTER_RATE,STRAIGHT_CENTER_RATE);
     }
 
-    // Small first-order rack response: enough to feel like steering, too fast to
-    // create the old boat-like yaw/lateral oscillation.
+    // Very short rack response for continuity, without adding a second vehicle
+    // dynamics system.
     steerRate+=(desiredSteer-steerRate)*(1-Math.exp(-dt/STEER_RESPONSE));
     steerFraction=LIFT_STEER_RATE>0?steerRate/LIFT_STEER_RATE:0;
 
     const netLateralRate=curveDrift+steerRate;
     lateral+=netLateralRate*dt;
-    understeer=clamp(Math.abs(netLateralRate)/Math.max(Math.abs(curveDrift),40),0,1.5);
+    understeer=clamp(Math.max(0,-Math.sign(curve||1)*netLateralRate)/80,0,1.5);
+
     distance+=speed*dt;
     score+=speed*dt*.10;
 
@@ -393,7 +403,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
       ctx.fillText(`SCORE ${Math.floor(score)}   BEST ${Math.floor(best)}`,W*.5,H*.40+23);
     }else{
       ctx.fillText('HOLD TO ACCELERATE',W*.5,H*.40);
-      ctx.fillText('LIFT BEFORE CORNERS',W*.5,H*.40+23);
+      ctx.fillText('LIFT TO TURN IN',W*.5,H*.40+23);
     }
     const barW=clamp(W*.46,190,330),barH=9,x=W*.5-barW/2,y=H*.58;
     ctx.strokeStyle='rgba(255,255,255,.48)';ctx.lineWidth=2;ctx.strokeRect(x,y,barW,barH);
