@@ -15,74 +15,75 @@
 (() => {
   const canvas=document.getElementById('game');
   const ctx=canvas.getContext('2d');
-  let W=0,H=0,DPR=1,skyGradient=null;
   const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
   const lerp=(a,b,t)=>a+(b-a)*t;
   const smooth=t=>t*t*(3-2*t);
 
-  const START_HOLD=.75;
-  const BRAKE_SPEED=58;
-  const MAX_SPEED=250;
-  const ROAD_SEG=42;
-  const DRAW_DIST=1420;
+  let W=0,H=0,DPR=1,skyGradient=null;
 
-  // Road/vehicle units are deliberately game-scale rather than SI. What matters
-  // is the relationship: required lateral acceleration rises with speed squared.
-  const ROAD_CURVE_SCALE=.00175;
+  const START_HOLD=.75;
+  const MIN_SPEED=52;
+  const MAX_SPEED=270;
+
+  const ROAD_CURVE_SCALE=.00155;
   const ROAD_HALF=116;
   const CAR_HALF=12;
-  const MAX_LAT_ACCEL=50;
-  const HEADING_GAIN=2.8;
-  const CENTER_GAIN=.85;
+  const WHEELBASE=18;
+  const MAX_LAT_ACCEL=68;
+  const STEER_LIMIT=.42;
+  const YAW_RESPONSE=.16;
+
+  const DRAW_DIST=1500;
+  const ROAD_SEG=32;
 
   let pressed=false,started=false,gameOver=false;
   let startCharging=false,startCharge=0;
   let speed=82,distance=0,score=0,best=+(localStorage.tinyRunBest||0);
-  let lateral=0,headingError=0;
-  let shake=0;
-  let nextCheckpoint=1800;
+  let lateral=0,headingError=0,yawRate=0,steer=0;
+  let shake=0,nextCheckpoint=2000;
   let roadPoints=[];
 
-  function horizonY(){return H*.265;}
+  function horizonY(){return H*.22;}
 
   function resize(){
     DPR=Math.min(2,devicePixelRatio||1);
     W=innerWidth;H=innerHeight;
     canvas.width=W*DPR;canvas.height=H*DPR;
     ctx.setTransform(DPR,0,0,DPR,0,0);
-    skyGradient=ctx.createLinearGradient(0,0,0,horizonY()+50);
-    skyGradient.addColorStop(0,'#181842');
-    skyGradient.addColorStop(.55,'#b94573');
-    skyGradient.addColorStop(1,'#f49b65');
+    skyGradient=ctx.createLinearGradient(0,0,0,horizonY()+70);
+    skyGradient.addColorStop(0,'#17173f');
+    skyGradient.addColorStop(.54,'#b64673');
+    skyGradient.addColorStop(1,'#f6a06a');
   }
   addEventListener('resize',resize);
 
   const bends=[
-    {len:520,k:0},
-    {len:430,k:.55},
+    {len:620,k:0},
+    {len:520,k:.30},
     {len:260,k:0},
-    {len:520,k:-.78},
-    {len:300,k:-.18},
-    {len:390,k:.92},
-    {len:280,k:0},
-    {len:620,k:-.62},
-    {len:250,k:.25},
-    {len:470,k:.80},
-    {len:340,k:0},
-    {len:700,k:-.92},
-    {len:310,k:.68},
-    {len:480,k:0}
+    {len:500,k:-1.05},
+    {len:240,k:0},
+    {len:420,k:.72},
+    {len:340,k:-.78},
+    {len:260,k:0},
+    {len:460,k:1.45},
+    {len:300,k:.30},
+    {len:520,k:-.58},
+    {len:240,k:0},
+    {len:430,k:-1.65},
+    {len:260,k:.70},
+    {len:520,k:0}
   ];
   const courseLen=bends.reduce((a,b)=>a+b.len,0);
 
-  function roadCurvature(z){
+  function roadRawCurvature(z){
     let q=((z%courseLen)+courseLen)%courseLen;
     for(let i=0;i<bends.length;i++){
       const b=bends[i];
       if(q<=b.len){
         const prev=bends[(i-1+bends.length)%bends.length].k;
         const next=bends[(i+1)%bends.length].k;
-        const edge=Math.min(105,b.len*.30);
+        const edge=Math.min(120,b.len*.30);
         if(q<edge)return lerp(prev,b.k,smooth(q/edge));
         if(q>b.len-edge)return lerp(b.k,next,smooth((q-(b.len-edge))/edge));
         return b.k;
@@ -92,10 +93,12 @@
     return 0;
   }
 
+  function roadCurvature(z){return roadRawCurvature(z)*ROAD_CURVE_SCALE;}
+
   function reset(){
     pressed=false;started=false;gameOver=false;startCharging=false;startCharge=0;
-    speed=82;distance=0;score=0;lateral=0;headingError=0;shake=0;
-    nextCheckpoint=1800;
+    speed=82;distance=0;score=0;lateral=0;headingError=0;yawRate=0;steer=0;
+    shake=0;nextCheckpoint=2000;
   }
 
   function launch(){
@@ -133,59 +136,61 @@
   function crash(){
     if(gameOver)return;
     gameOver=true;pressed=false;startCharging=false;startCharge=0;
-    shake=10;
+    shake=11;
     best=Math.max(best,Math.floor(score));
     localStorage.tinyRunBest=best;
   }
 
   function update(dt){
     dt=Math.min(dt,.033);
-    shake*=Math.pow(.025,dt);
+    shake*=Math.pow(.018,dt);
 
     if(!started||gameOver){
       if(startCharging)startCharge=clamp(startCharge+dt/START_HOLD,0,1);
       return;
     }
 
-    // One button, one job: brake. Releasing lets the car accelerate again.
-    const targetSpeed=pressed?BRAKE_SPEED:MAX_SPEED;
-    const response=pressed?4.6:1.15;
-    speed+=(targetSpeed-speed)*(1-Math.exp(-response*dt));
-
-    // Automatic steering tries to follow the road centreline. It is not magic:
-    // tyre grip limits lateral acceleration, so maximum yaw rate falls as speed
-    // rises. When the road asks for more yaw than the tyres can deliver, heading
-    // error accumulates and the car physically runs toward the outside edge.
-    const k=roadCurvature(distance);
-    const forward=speed*Math.max(.72,Math.cos(headingError));
-    const roadYaw=forward*k*ROAD_CURVE_SCALE;
-    const desiredYaw=roadYaw-HEADING_GAIN*headingError-CENTER_GAIN*(lateral/ROAD_HALF);
-    const maxYaw=MAX_LAT_ACCEL/Math.max(speed,45);
-    const actualYaw=clamp(desiredYaw,-maxYaw,maxYaw);
-
-    headingError+=(actualYaw-roadYaw)*dt;
-    headingError=clamp(headingError,-.75,.75);
-    lateral+=speed*Math.sin(headingError)*dt;
-    distance+=forward*dt;
-    score+=forward*dt*.10;
-
-    // The failure condition is geometric: the car reaches the edge of the road.
-    // There is no curvature or speed threshold hidden here.
-    const edge=ROAD_HALF-CAR_HALF;
-    if(Math.abs(lateral)>=edge){
-      crash();
-      return;
+    let accel;
+    if(pressed){
+      accel=115*(1-speed/MAX_SPEED)-7-.00006*speed*speed;
+    }else{
+      accel=-50-.00012*speed*speed;
     }
+    speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
+
+    const look=32+speed*.16;
+    const kRef=.72*roadCurvature(distance+look*.25)+.28*roadCurvature(distance+look);
+    const feedForward=Math.atan(WHEELBASE*kRef);
+    const correction=-1.05*headingError-Math.atan(.0028*lateral);
+    const steerCmd=clamp(feedForward+correction,-STEER_LIMIT,STEER_LIMIT);
+
+    steer+=(steerCmd-steer)*(1-Math.exp(-dt/.10));
+    const commandedCurvature=Math.tan(steer)/WHEELBASE;
+    const maxCarCurvature=MAX_LAT_ACCEL/Math.max(speed*speed,1);
+    const carCurvature=clamp(commandedCurvature,-maxCarCurvature,maxCarCurvature);
+    const targetYawRate=speed*carCurvature;
+    yawRate+=(targetYawRate-yawRate)*(1-Math.exp(-dt/YAW_RESPONSE));
+
+    const kRoad=roadCurvature(distance);
+    const denom=Math.max(.70,1-kRoad*lateral);
+    const forward=speed*Math.cos(headingError)/denom;
+    lateral+=speed*Math.sin(headingError)*dt;
+    headingError+=(yawRate-kRoad*forward)*dt;
+    headingError=clamp(headingError,-.85,.85);
+    distance+=Math.max(0,forward)*dt;
+    score+=Math.max(0,forward)*dt*.10;
+
+    if(Math.abs(lateral)>=ROAD_HALF-CAR_HALF){crash();return;}
 
     if(distance>=nextCheckpoint){
-      nextCheckpoint+=1800;
+      nextCheckpoint+=2000;
       score+=500;
     }
   }
 
   function perspective(d){
     const near=1-clamp(d/DRAW_DIST,0,1);
-    return Math.pow(near,2.12);
+    return Math.pow(near,2.05);
   }
 
   function buildRoadPoints(){
@@ -198,59 +203,67 @@
       const p=perspective(d);
       roadPoints.push({
         d,p,
-        x:W*.5+offset*p*1.15,
-        y:lerp(hy,H*1.08,p),
-        width:lerp(8,W*.70,p)
+        x:W*.5+offset*p*1.22,
+        y:lerp(hy,H*1.11,p),
+        width:lerp(7,W*.88,p)
       });
       if(i<count){
         const mid=d+ROAD_SEG*.5;
-        heading+=roadCurvature(distance+mid)*ROAD_SEG*ROAD_CURVE_SCALE;
+        heading+=roadCurvature(distance+mid)*ROAD_SEG;
         offset+=heading*ROAD_SEG;
       }
     }
   }
 
+  function pointAtDistance(d){
+    const f=clamp(d/ROAD_SEG,0,roadPoints.length-1);
+    const i=Math.floor(f),j=Math.min(i+1,roadPoints.length-1),q=f-i;
+    const a=roadPoints[i],b=roadPoints[j];
+    return {x:lerp(a.x,b.x,q),y:lerp(a.y,b.y,q),width:lerp(a.width,b.width,q),p:lerp(a.p,b.p,q)};
+  }
+
   function drawBackground(){
     const hy=horizonY();
-    ctx.fillStyle=skyGradient||'#b94573';ctx.fillRect(0,0,W,hy+50);
+    ctx.fillStyle=skyGradient||'#b64673';ctx.fillRect(0,0,W,hy+70);
 
-    const sunX=W*.72,sunY=hy*.58,sunR=clamp(W*.09,34,68);
-    ctx.fillStyle='#ffd77a';ctx.beginPath();ctx.arc(sunX,sunY,sunR,0,Math.PI*2);ctx.fill();
-    ctx.fillStyle='rgba(185,69,115,.60)';
-    for(let y=sunY-sunR*.1;y<sunY+sunR;y+=8)ctx.fillRect(sunX-sunR-2,y,sunR*2+4,3);
+    const sunX=W*.73,sunY=hy*.60,sunR=clamp(W*.085,32,66);
+    ctx.fillStyle='#ffd87d';ctx.beginPath();ctx.arc(sunX,sunY,sunR,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='rgba(182,70,115,.60)';
+    for(let y=sunY-sunR*.10;y<sunY+sunR;y+=8)ctx.fillRect(sunX-sunR-2,y,sunR*2+4,3);
 
-    ctx.fillStyle='#352654';ctx.beginPath();ctx.moveTo(0,hy+30);
+    ctx.fillStyle='#352654';ctx.beginPath();ctx.moveTo(0,hy+35);
     for(let x=0;x<=W+80;x+=80){
-      const yy=hy-18-Math.sin(x*.018+1.2)*18-Math.sin(x*.041)*9;
-      ctx.lineTo(x,yy);
-    }
-    ctx.lineTo(W,hy+45);ctx.lineTo(0,hy+45);ctx.fill();
-
-    ctx.fillStyle='#20384a';ctx.beginPath();ctx.moveTo(0,hy+35);
-    for(let x=0;x<=W+60;x+=60){
-      const yy=hy+7-Math.sin(x*.025+.4)*14-Math.sin(x*.063)*6;
+      const yy=hy-17-Math.sin(x*.018+1.2)*18-Math.sin(x*.041)*9;
       ctx.lineTo(x,yy);
     }
     ctx.lineTo(W,hy+55);ctx.lineTo(0,hy+55);ctx.fill();
 
-    ctx.fillStyle='#184c45';ctx.fillRect(0,hy+30,W,H-hy-30);
+    ctx.fillStyle='#20384a';ctx.beginPath();ctx.moveTo(0,hy+45);
+    for(let x=0;x<=W+60;x+=60){
+      const yy=hy+10-Math.sin(x*.025+.4)*14-Math.sin(x*.063)*6;
+      ctx.lineTo(x,yy);
+    }
+    ctx.lineTo(W,hy+65);ctx.lineTo(0,hy+65);ctx.fill();
+
+    ctx.fillStyle='#174c43';ctx.fillRect(0,hy+40,W,H-hy-40);
   }
 
   function drawRoad(){
     buildRoadPoints();
+
     for(let i=roadPoints.length-2;i>=0;i--){
       const a=roadPoints[i],b=roadPoints[i+1];
       const band=Math.floor((distance+a.d)/ROAD_SEG);
 
-      ctx.fillStyle=band%2?'#22624f':'#1d5947';
+      ctx.fillStyle=band&1?'#236249':'#1b5842';
       ctx.beginPath();
-      ctx.moveTo(0,a.y);ctx.lineTo(a.x-a.width*.64,a.y);
-      ctx.lineTo(b.x-b.width*.64,b.y);ctx.lineTo(0,b.y);ctx.fill();
+      ctx.moveTo(0,a.y);ctx.lineTo(a.x-a.width*.63,a.y);
+      ctx.lineTo(b.x-b.width*.63,b.y);ctx.lineTo(0,b.y);ctx.fill();
       ctx.beginPath();
-      ctx.moveTo(W,a.y);ctx.lineTo(a.x+a.width*.64,a.y);
-      ctx.lineTo(b.x+b.width*.64,b.y);ctx.lineTo(W,b.y);ctx.fill();
+      ctx.moveTo(W,a.y);ctx.lineTo(a.x+a.width*.63,a.y);
+      ctx.lineTo(b.x+b.width*.63,b.y);ctx.lineTo(W,b.y);ctx.fill();
 
-      ctx.fillStyle=band%2?'#f3e7d0':'#d85353';
+      ctx.fillStyle=band&1?'#f2e7cf':'#d64f50';
       for(const side of [-1,1]){
         ctx.beginPath();
         ctx.moveTo(a.x+side*a.width*.50,a.y);
@@ -260,44 +273,54 @@
         ctx.fill();
       }
 
-      ctx.fillStyle=band%2?'#47474e':'#414148';
+      ctx.fillStyle=band&1?'#47474e':'#3f4047';
       ctx.beginPath();
       ctx.moveTo(a.x-a.width*.50,a.y);ctx.lineTo(a.x+a.width*.50,a.y);
       ctx.lineTo(b.x+b.width*.50,b.y);ctx.lineTo(b.x-b.width*.50,b.y);ctx.fill();
-
-      if((band&3)<2){
-        ctx.fillStyle='rgba(255,245,205,.72)';
-        const wa=a.width*.014,wb=b.width*.014;
-        ctx.beginPath();
-        ctx.moveTo(a.x-wa,a.y);ctx.lineTo(a.x+wa,a.y);
-        ctx.lineTo(b.x+wb,b.y);ctx.lineTo(b.x-wb,b.y);ctx.fill();
-      }
     }
 
-    const spacing=168;
-    const first=Math.ceil(distance/spacing)*spacing;
-    for(let z=first;z<distance+DRAW_DIST;z+=spacing){
+    const dashPeriod=82,dashLen=34;
+    let z=Math.ceil(distance/dashPeriod)*dashPeriod;
+    for(;z<distance+DRAW_DIST;z+=dashPeriod){
+      const d0=z-distance,d1=Math.min(d0+dashLen,DRAW_DIST);
+      const a=pointAtDistance(d0),b=pointAtDistance(d1);
+      const wa=a.width*.012,wb=b.width*.012;
+      ctx.fillStyle='rgba(255,246,208,.82)';
+      ctx.beginPath();
+      ctx.moveTo(a.x-wa,a.y);ctx.lineTo(a.x+wa,a.y);
+      ctx.lineTo(b.x+wb,b.y);ctx.lineTo(b.x-wb,b.y);ctx.fill();
+    }
+
+    const spacing=92;
+    z=Math.ceil(distance/spacing)*spacing;
+    const speedFrac=clamp((speed-120)/(MAX_SPEED-120),0,1);
+    for(;z<distance+DRAW_DIST;z+=spacing){
       const d=z-distance;
-      const idx=clamp(Math.round(d/ROAD_SEG),0,roadPoints.length-1);
-      const p=roadPoints[idx];
+      const p=pointAtDistance(d);
       const side=(Math.floor(z/spacing)&1)?-1:1;
-      const h=lerp(2,42,p.p),w=lerp(1,6,p.p);
-      const x=p.x+side*p.width*.72;
-      ctx.fillStyle='#f3e7d0';ctx.fillRect(x-w/2,p.y-h,w,h);
-      ctx.fillStyle='#d85353';ctx.fillRect(x-w/2,p.y-h,w,h*.28);
+      const h=lerp(2,54,p.p),w=lerp(1,7,p.p);
+      const x=p.x+side*p.width*.70;
+      if(speedFrac>.25&&p.p>.45){
+        ctx.strokeStyle=`rgba(238,230,208,${.10+.17*speedFrac})`;
+        ctx.lineWidth=Math.max(1,w*.45);
+        ctx.beginPath();ctx.moveTo(x,p.y-h*.35);ctx.lineTo(x,p.y+h*speedFrac*.70);ctx.stroke();
+      }
+      ctx.fillStyle='#f1e7d0';ctx.fillRect(x-w/2,p.y-h,w,h);
+      ctx.fillStyle='#d64f50';ctx.fillRect(x-w/2,p.y-h,w,h*.27);
     }
   }
 
   function drawCar(){
-    const roadHalfPx=W*.70*.50;
+    const roadHalfPx=W*.88*.50;
     const x=W*.5+(lateral/ROAD_HALF)*roadHalfPx;
-    const y=H*.79;
-    const s=clamp(W/520,.72,1.25);
-    ctx.save();ctx.translate(x,y);
-    ctx.rotate(clamp(headingError,-.28,.28));
+    const y=H*.835;
+    const s=clamp(W/520,.72,1.28);
 
-    ctx.fillStyle='rgba(0,0,0,.28)';
-    ctx.beginPath();ctx.ellipse(0,14*s,31*s,9*s,0,0,Math.PI*2);ctx.fill();
+    ctx.save();ctx.translate(x,y);
+    ctx.rotate(clamp(headingError,-.34,.34));
+
+    ctx.fillStyle='rgba(0,0,0,.30)';
+    ctx.beginPath();ctx.ellipse(0,15*s,32*s,9*s,0,0,Math.PI*2);ctx.fill();
 
     ctx.fillStyle='#d83f52';
     ctx.beginPath();
@@ -308,10 +331,16 @@
     ctx.fillStyle='#172535';
     ctx.beginPath();ctx.moveTo(-12*s,-19*s);ctx.lineTo(12*s,-19*s);ctx.lineTo(18*s,-7*s);ctx.lineTo(-18*s,-7*s);ctx.closePath();ctx.fill();
 
-    ctx.fillStyle=pressed?'#ff594f':'#ffcc72';
+    ctx.fillStyle='#ffb05f';
     ctx.fillRect(-23*s,5*s,8*s,5*s);ctx.fillRect(15*s,5*s,8*s,5*s);
     ctx.fillStyle='#6b1527';ctx.fillRect(-18*s,14*s,36*s,4*s);
     ctx.fillStyle='#181a20';ctx.fillRect(-30*s,8*s,5*s,13*s);ctx.fillRect(25*s,8*s,5*s,13*s);
+
+    if(pressed&&speed>95){
+      const flick=(Math.sin(performance.now()*.035)+1)*.5;
+      ctx.fillStyle=`rgba(255,205,103,${.40+.35*flick})`;
+      ctx.beginPath();ctx.moveTo(-15*s,20*s);ctx.lineTo(-11*s,(27+5*flick)*s);ctx.lineTo(-7*s,20*s);ctx.fill();
+    }
     ctx.restore();
   }
 
@@ -324,13 +353,13 @@
     ctx.fillStyle='#fff';ctx.fillText('TINY RUN',W*.5,H*.30);
 
     ctx.font='700 13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.fillStyle='rgba(255,255,255,.74)';
+    ctx.fillStyle='rgba(255,255,255,.76)';
     if(gameOver){
       ctx.fillText('OFF ROAD',W*.5,H*.40);
       ctx.fillText(`SCORE ${Math.floor(score)}   BEST ${Math.floor(best)}`,W*.5,H*.40+23);
     }else{
-      ctx.fillText('ONE BUTTON. BRAKE FOR CORNERS.',W*.5,H*.40);
-      ctx.fillText('RELEASE TO GO · HOLD TO BRAKE',W*.5,H*.40+23);
+      ctx.fillText('PRESS TO ACCELERATE',W*.5,H*.40);
+      ctx.fillText('RELEASE FOR CORNERS',W*.5,H*.40+23);
     }
 
     const barW=clamp(W*.46,190,330),barH=9,x=W*.5-barW/2,y=H*.58;
@@ -346,7 +375,11 @@
 
   function draw(){
     ctx.save();
-    if(shake>0)ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
+    const speedShake=started&&!gameOver?clamp((speed-210)/80,0,1)*.9:0;
+    if(shake>0||speedShake>0){
+      const s=shake+speedShake;
+      ctx.translate((Math.random()-.5)*s,(Math.random()-.5)*s);
+    }
     drawBackground();drawRoad();drawCar();drawOverlay();
     ctx.restore();
   }
