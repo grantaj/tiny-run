@@ -18,7 +18,6 @@
   const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
   const lerp=(a,b,t)=>a+(b-a)*t;
   const smooth=t=>t*t*(3-2*t);
-  const approach=(x,target,amount)=>x<target?Math.min(target,x+amount):Math.max(target,x-amount);
 
   let W=0,H=0,DPR=1,skyGradient=null;
 
@@ -29,15 +28,13 @@
   const ROAD_CURVE_SCALE=.00155;
   const ROAD_HALF=116;
   const CAR_HALF=12;
-  const MAX_LAT_ACCEL=62;
 
-  // Steering itself is automatic and exact while there is enough tyre grip.
-  // Once cornering demand exceeds grip, the excess becomes a one-way outward
-  // slip rate. There is deliberately no yaw/lateral-velocity oscillator here.
-  const RECENTER_SPEED=24;
-  const SLIP_BASE=12;
-  const SLIP_GAIN=92;
-  const MAX_SLIP_SPEED=165;
+  // OutRun-style lateral model. The road curve pushes the car sideways at a
+  // rate proportional to speed. Steering directly changes lateral position too.
+  // There is no yaw, lateral velocity, slip state, or recenter mode.
+  const CURVE_DRIFT_GAIN=.40;
+  const MAX_STEER_RATE=95;
+  const CENTER_GAIN=.80;
 
   const DRAW_DIST=1080;
   const ROAD_SEG=28;
@@ -46,7 +43,7 @@
   let pressed=false,started=false,gameOver=false;
   let startCharging=false,startCharge=0;
   let speed=86,distance=0,score=0,best=+(localStorage.tinyRunBest||0);
-  let lateral=0,slipping=false,slipStrength=0;
+  let lateral=0,steerRate=0,curveDrift=0,understeer=0;
   let shake=0,nextCheckpoint=CHECKPOINT_SPACING;
   let roadPoints=[];
 
@@ -104,7 +101,7 @@
 
   function reset(){
     pressed=false;started=false;gameOver=false;startCharging=false;startCharge=0;
-    speed=86;distance=0;score=0;lateral=0;slipping=false;slipStrength=0;
+    speed=86;distance=0;score=0;lateral=0;steerRate=0;curveDrift=0;understeer=0;
     shake=0;nextCheckpoint=CHECKPOINT_SPACING;
   }
 
@@ -157,33 +154,32 @@
       return;
     }
 
-    // Press = throttle; release = coast with only rolling/aero drag.
     let accel;
     if(pressed)accel=122*(1-speed/MAX_SPEED)-5-.000045*speed*speed;
     else accel=-7-.00008*speed*speed;
     speed=clamp(speed+accel*dt,MIN_SPEED,MAX_SPEED);
 
-    const kRoad=roadCurvature(distance);
-    const demand=speed*speed*Math.abs(kRoad);
+    // This deliberately mirrors OutRun's simple structure: the road itself moves
+    // the car sideways, and steering is a second direct x-position contribution.
+    // A right bend pushes the car toward its outside (left), and vice versa.
+    const k=roadRawCurvature(distance);
+    curveDrift=-k*speed*CURVE_DRIFT_GAIN;
 
-    if(demand>MAX_LAT_ACCEL&&Math.abs(kRoad)>1e-7){
-      // The player has asked the tyres for more cornering force than they have.
-      // Convert overload directly into visible road-relative understeer. This is
-      // first-order and monotonic: it cannot sway, ring, or turn the wrong way.
-      slipping=true;
-      const overload=demand/MAX_LAT_ACCEL-1;
-      slipStrength=clamp(overload,0,2.5);
-      const outside=-Math.sign(kRoad);
-      const slipSpeed=clamp(SLIP_BASE+SLIP_GAIN*overload,0,MAX_SLIP_SPEED);
-      lateral+=outside*slipSpeed*dt;
-    }else{
-      // With enough grip the car follows the road tangent exactly. If a previous
-      // mistake left it off-centre, the automatic driver returns at a bounded,
-      // constant rate rather than snapping exponentially to zero.
-      slipping=false;
-      slipStrength=0;
-      lateral=approach(lateral,0,RECENTER_SPEED*dt);
-    }
+    // The automatic driver first spends steering authority cancelling the bend.
+    // Any steering capacity left over is used to return toward the centre. There
+    // is no special recovery mode, so nothing can snap or teleport.
+    const lowSpeedScale=clamp(speed/110,.55,1);
+    const maxSteer=MAX_STEER_RATE*lowSpeedScale;
+    const followSteer=clamp(-curveDrift,-maxSteer,maxSteer);
+    const spare=Math.max(0,maxSteer-Math.abs(followSteer));
+    const centreSteer=clamp(-lateral*CENTER_GAIN,-spare,spare);
+    steerRate=followSteer+centreSteer;
+
+    // If curve drift is stronger than maximum steering, the uncancelled remainder
+    // carries the car continuously toward the outside edge. That is the failure.
+    const netLateralRate=curveDrift+steerRate;
+    lateral+=netLateralRate*dt;
+    understeer=clamp((Math.abs(curveDrift)-maxSteer)/Math.max(maxSteer,1),0,1.5);
 
     distance+=speed*dt;
     score+=speed*dt*.10;
@@ -342,6 +338,9 @@
     const s=clamp(W/520,.72,1.28);
 
     ctx.save();ctx.translate(x,y);
+    // OutRun changes the car frame with steering input. A tiny rotation gives the
+    // same readable cue here, and is driven by the exact steering term used above.
+    ctx.rotate(clamp(steerRate/MAX_STEER_RATE*.075,-.075,.075));
 
     ctx.fillStyle='rgba(0,0,0,.30)';ctx.beginPath();ctx.ellipse(0,15*s,32*s,9*s,0,0,Math.PI*2);ctx.fill();
     ctx.fillStyle='#d83f52';ctx.beginPath();
@@ -351,10 +350,8 @@
     ctx.fillStyle='#6b1527';ctx.fillRect(-18*s,14*s,36*s,4*s);
     ctx.fillStyle='#181a20';ctx.fillRect(-30*s,8*s,5*s,13*s);ctx.fillRect(25*s,8*s,5*s,13*s);
 
-    // Tiny tyre-scrub marks communicate that the car is beyond grip without
-    // rotating or introducing another steering cue.
-    if(slipping){
-      const alpha=.16+.22*clamp(slipStrength/1.5,0,1);
+    if(understeer>0){
+      const alpha=.12+.28*clamp(understeer,0,1);
       ctx.strokeStyle=`rgba(22,22,25,${alpha})`;ctx.lineWidth=2*s;
       ctx.beginPath();ctx.moveTo(-20*s,20*s);ctx.lineTo(-20*s,29*s);ctx.stroke();
       ctx.beginPath();ctx.moveTo(20*s,20*s);ctx.lineTo(20*s,29*s);ctx.stroke();
