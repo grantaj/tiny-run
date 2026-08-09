@@ -31,8 +31,8 @@
   let pressed=false,started=false,gameOver=false;
   let startCharging=false,startCharge=0;
   let speed=82,distance=0,score=0,best=+(localStorage.tinyRunBest||0);
-  let shake=0,t=0,crashReason='';
-  let nextCheckpoint=1800,checkpointFlash=0;
+  let shake=0,crashReason='';
+  let nextCheckpoint=1800;
   let roadPoints=[];
 
   function horizonY(){return H*.265;}
@@ -49,9 +49,6 @@
   }
   addEventListener('resize',resize);
 
-  // A repeating sequence of straights and bends. The button never steers:
-  // the road supplies the direction, while the player decides whether the
-  // car is slow enough to survive the corner.
   const bends=[
     {len:520,k:0},
     {len:430,k:.55},
@@ -92,19 +89,10 @@
     return lerp(252,104,Math.pow(a,.70));
   }
 
-  function cornerAhead(z,look=330){
-    let strongest=0;
-    for(let d=35;d<=look;d+=35){
-      const k=roadCurvature(z+d);
-      if(Math.abs(k)>Math.abs(strongest))strongest=k;
-    }
-    return strongest;
-  }
-
   function reset(){
     pressed=false;started=false;gameOver=false;startCharging=false;startCharge=0;
-    speed=82;distance=0;score=0;shake=0;t=0;crashReason='';
-    nextCheckpoint=1800;checkpointFlash=0;
+    speed=82;distance=0;score=0;shake=0;crashReason='';
+    nextCheckpoint=1800;
   }
 
   function launch(){
@@ -116,6 +104,7 @@
     if(!started||gameOver){startCharging=true;startCharge=0;pressed=false;return;}
     pressed=true;
   }
+
   function release(){
     if(!started||gameOver){
       if(startCharging&&startCharge>=1)launch();
@@ -149,22 +138,16 @@
   function update(dt){
     dt=Math.min(dt,.033);
     shake*=Math.pow(.025,dt);
-    checkpointFlash=Math.max(0,checkpointFlash-dt);
 
     if(!started||gameOver){
       if(startCharging)startCharge=clamp(startCharge+dt/START_HOLD,0,1);
       return;
     }
 
-    t+=dt;
-
-    // One button, one job: brake. Release accelerates automatically.
     const targetSpeed=pressed?BRAKE_SPEED:MAX_SPEED;
     const response=pressed?4.6:1.15;
     speed+=(targetSpeed-speed)*(1-Math.exp(-response*dt));
 
-    // There is no lateral simulation. If the current bend asks for more grip
-    // than the current speed permits, the run ends immediately.
     const k=roadCurvature(distance+CAR_Z);
     const safe=safeSpeedFor(k);
     if(Math.abs(k)>.16&&speed>safe+CRASH_MARGIN){
@@ -178,7 +161,6 @@
     if(distance>=nextCheckpoint){
       nextCheckpoint+=1800;
       score+=500;
-      checkpointFlash=1.1;
     }
   }
 
@@ -187,8 +169,6 @@
     return Math.pow(near,2.12);
   }
 
-  // Build the entire road projection in one forward pass. The previous version
-  // re-integrated from zero for every screen point, which made redraw O(n^2).
   function buildRoadPoints(){
     roadPoints.length=0;
     const count=Math.ceil(DRAW_DIST/ROAD_SEG);
@@ -275,8 +255,6 @@
       }
     }
 
-    // Roadside posts use the already-computed projection instead of triggering
-    // another road integration.
     const spacing=168;
     const first=Math.ceil(distance/spacing)*spacing;
     for(let z=first;z<distance+DRAW_DIST;z+=spacing){
@@ -315,50 +293,6 @@
     ctx.restore();
   }
 
-  function drawHUD(){
-    const pad=18;
-    ctx.textBaseline='top';
-    ctx.font='700 15px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.fillStyle='rgba(255,255,255,.92)';
-    ctx.fillText(`SCORE ${Math.floor(score).toString().padStart(6,'0')}`,pad,pad);
-    ctx.fillText(`BEST  ${Math.floor(best).toString().padStart(6,'0')}`,pad,pad+22);
-
-    ctx.textAlign='right';
-    ctx.font='800 28px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.fillText(`${Math.round(speed)}`,W-pad,pad-3);
-    ctx.font='700 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-    ctx.fillText('KM/H',W-pad,pad+29);
-    ctx.textAlign='left';
-
-    if(started&&!gameOver){
-      const k=cornerAhead(distance+CAR_Z);
-      if(Math.abs(k)>.18){
-        const dir=k>0?'RIGHT':'LEFT';
-        const safe=Math.round(safeSpeedFor(k));
-        const danger=speed>safe;
-        ctx.textAlign='center';
-        ctx.font='800 13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-        ctx.fillStyle=danger?'#ffb19e':'rgba(255,238,184,.94)';
-        ctx.fillText(`${dir}  ${safe}`,W*.5,18);
-        ctx.textAlign='left';
-      }
-
-      ctx.textAlign='center';
-      ctx.font='700 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-      ctx.fillStyle=pressed?'#ffd77a':'rgba(255,255,255,.52)';
-      ctx.fillText(pressed?'BRAKE':'RELEASE = GAS',W*.5,H-28);
-      ctx.textAlign='left';
-    }
-
-    if(checkpointFlash>0){
-      ctx.textAlign='center';
-      ctx.font='900 22px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
-      ctx.fillStyle=`rgba(255,235,161,${clamp(checkpointFlash,0,1)})`;
-      ctx.fillText('+500 CHECKPOINT',W*.5,H*.36);
-      ctx.textAlign='left';
-    }
-  }
-
   function drawOverlay(){
     if(started&&!gameOver)return;
     ctx.fillStyle='rgba(4,8,17,.48)';ctx.fillRect(0,0,W,H);
@@ -391,7 +325,7 @@
   function draw(){
     ctx.save();
     if(shake>0)ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
-    drawBackground();drawRoad();drawCar();drawHUD();drawOverlay();
+    drawBackground();drawRoad();drawCar();drawOverlay();
     ctx.restore();
   }
 
