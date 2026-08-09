@@ -509,11 +509,9 @@ canvas{position:fixed;left:0;top:0;display:block;touch-action:none}
       ctx.fillText('TIME UP',W*.5,H*.40);
       ctx.fillText(`SCORE ${Math.floor(score)}   BEST ${Math.floor(best)}`,W*.5,H*.40+23);
     }else{
-      ctx.fillText('HOLD TO ACCELERATE',W*.5,H*.40);
-      ctx.fillText('LIFT TO TIGHTEN LINE',W*.5,H*.40+23);
-      ctx.fillText('CHECKPOINTS ADD TIME',W*.5,H*.40+46);
+      ctx.fillText('HOLD TO ACCELERATE  •  LIFT FOR CORNERS',W*.5,H*.40);
     }
-    const barW=clamp(W*.46,190,330),barH=9,x=W*.5-barW/2,y=H*.58;
+    const barW=clamp(W*.46,190,330),barH=9,x=W*.5-barW/2,y=H*.52;
     ctx.strokeStyle='rgba(255,255,255,.48)';ctx.lineWidth=2;ctx.strokeRect(x,y,barW,barH);
     ctx.fillStyle=startCharge>=1?'#ffd77a':'rgba(255,255,255,.88)';ctx.fillRect(x+2,y+2,(barW-4)*startCharge,barH-4);
     ctx.font='700 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
