@@ -44,22 +44,23 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
   const STRAIGHT_CENTER_RATE=24;
 
   const ROAD_CURVE_SCALE=.00155;
-  const DRAW_DIST=1080;
-  const ROAD_SEG=28;
+  // A shorter visual depth makes roadside references sweep past more quickly.
+  const DRAW_DIST=900;
+  const ROAD_SEG=20;
   const CHECKPOINT_SPACING=1800;
 
-  // Tight OutRun-style clock. Full throttle reaches the first gate in about 8 s,
-  // so 9.5 s leaves only a small budget for the lifts needed to make the bends.
-  const START_TIME=9.5;
-  const CHECKPOINT_TIME=7;
-  const MAX_TIME=10.5;
+  // The first gate is reachable with a little margin. Thereafter a checkpoint
+  // buys roughly one clean section, not enough to absorb repeated reckless crashes.
+  const START_TIME=9.2;
+  const CHECKPOINT_TIME=6.6;
+  const MAX_TIME=8.6;
 
   // Leaving the kerbs slowly is a recoverable excursion. Doing it at high speed
-  // becomes a proper crash/spin: nearly stationary for long enough to hurt badly.
+  // becomes a proper crash/spin and burns most of a checkpoint's spare time.
   const OFFROAD_RECOVERY=.65;
   const OFFROAD_SPEED=76;
   const CRASH_SPEED=190;
-  const CRASH_RECOVERY=2.15;
+  const CRASH_RECOVERY=3.0;
 
   let pressed=false,started=false,gameOver=false;
   let startCharging=false,startCharge=0;
@@ -180,12 +181,10 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     lateral=clamp(lateral,-limit,limit);
 
     if(impactSpeed>=CRASH_SPEED){
-      // A high-speed departure is the Tiny Run equivalent of OutRun's big crash:
-      // the run continues, but the clock keeps burning while the car spins/stops.
       speed=Math.min(speed,32);
       offroadCooldown=CRASH_RECOVERY;
       crashTimer=CRASH_RECOVERY;
-      shake=16;
+      shake=18;
     }else{
       speed=Math.min(speed,OFFROAD_SPEED);
       offroadCooldown=OFFROAD_RECOVERY;
@@ -233,9 +232,6 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     let desiredSteer;
 
     if(inCorner){
-      // Follow the bend while aiming progressively toward the inside. Because the
-      // feed-forward steering is fixed for a given road curvature, speed selects
-      // the resulting line: slow = tight, medium = balanced, fast = wide.
       const strength=clamp(Math.abs(curve)/1.3,0,1);
       const target=Math.sign(curve)*ROAD_HALF*lerp(.12,APEX_INSIDE,strength);
       desiredSteer=clamp(
@@ -243,8 +239,6 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
         -MAX_STEER_RATE,MAX_STEER_RATE
       );
     }else if(approaching){
-      // Set up a simple racing line by drifting toward the outside before the
-      // bend, while applying only a little preview steering into the corner.
       const strength=clamp(Math.abs(preview)/1.3,0,1);
       const target=-Math.sign(preview)*ROAD_HALF*ENTRY_OUTSIDE*strength;
       desiredSteer=clamp(
@@ -255,7 +249,6 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
       desiredSteer=clamp(-lateral*.28,-STRAIGHT_CENTER_RATE,STRAIGHT_CENTER_RATE);
     }
 
-    // One continuous steering rack. No throttle-dependent steering mode.
     steerRate+=(desiredSteer-steerRate)*(1-Math.exp(-dt/STEER_RESPONSE));
     steerFraction=MAX_STEER_RATE>0?steerRate/MAX_STEER_RATE:0;
 
@@ -279,7 +272,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 
   function perspective(d){
     const near=1-clamp(d/DRAW_DIST,0,1);
-    return Math.pow(near,1.88);
+    return Math.pow(near,2.08);
   }
 
   function buildRoadPoints(){
@@ -287,14 +280,14 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     const count=Math.ceil(DRAW_DIST/ROAD_SEG);
     let heading=0,offset=0;
     const hy=horizonY();
-    const roadHalfPx=W*.98*.50;
+    const roadHalfPx=W*1.08*.50;
     const cameraShift=-(lateral/ROAD_HALF)*roadHalfPx;
 
     for(let i=0;i<=count;i++){
       const d=i*ROAD_SEG;
       const p=perspective(d);
-      const x=W*.5+cameraShift*p+offset*p*1.28;
-      roadPoints.push({d,p,x,y:lerp(hy,H*1.16,p),width:lerp(6,W*.98,p)});
+      const x=W*.5+cameraShift*p+offset*p*1.30;
+      roadPoints.push({d,p,x,y:lerp(hy,H*1.18,p),width:lerp(6,W*1.08,p)});
       if(i<count){
         const mid=d+ROAD_SEG*.5;
         heading+=roadCurvature(distance+mid)*ROAD_SEG;
@@ -377,45 +370,47 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
       ctx.beginPath();ctx.moveTo(a.x-a.width*.50,a.y);ctx.lineTo(a.x+a.width*.50,a.y);ctx.lineTo(b.x+b.width*.50,b.y);ctx.lineTo(b.x-b.width*.50,b.y);ctx.fill();
     }
 
-    const dashPeriod=56,dashLen=25;
+    const dashPeriod=40,dashLen=18;
     let z=Math.ceil(distance/dashPeriod)*dashPeriod;
     for(;z<distance+DRAW_DIST;z+=dashPeriod){
       const a=pointAtDistance(z-distance),b=pointAtDistance(Math.min(z-distance+dashLen,DRAW_DIST));
       const wa=a.width*.011,wb=b.width*.011;
-      ctx.fillStyle='rgba(255,246,208,.84)';
+      ctx.fillStyle='rgba(255,246,208,.86)';
       ctx.beginPath();ctx.moveTo(a.x-wa,a.y);ctx.lineTo(a.x+wa,a.y);ctx.lineTo(b.x+wb,b.y);ctx.lineTo(b.x-wb,b.y);ctx.fill();
     }
 
-    const spacing=64;
+    const speedFrac=clamp((speed-70)/(MAX_SPEED-70),0,1);
+    const spacing=46;
     let z2=Math.ceil(distance/spacing)*spacing;
-    const speedFrac=clamp((speed-90)/(MAX_SPEED-90),0,1);
     for(;z2<distance+DRAW_DIST;z2+=spacing){
       const p=pointAtDistance(z2-distance);
-      const h=lerp(2,58,p.p),w=lerp(1,7,p.p);
+      const h=lerp(2,60,p.p),w=lerp(1,7,p.p);
       for(const side of [-1,1]){
         const x=p.x+side*p.width*.70;
-        if(speedFrac>.18&&p.p>.35){
-          ctx.strokeStyle=`rgba(238,230,208,${.10+.22*speedFrac})`;
-          ctx.lineWidth=Math.max(1,w*.42);
-          ctx.beginPath();ctx.moveTo(x,p.y-h*.35);ctx.lineTo(x,p.y+h*(.45+speedFrac));ctx.stroke();
+        if(speedFrac>.12&&p.p>.28){
+          ctx.strokeStyle=`rgba(238,230,208,${.10+.35*speedFrac})`;
+          ctx.lineWidth=Math.max(1,w*.46);
+          ctx.beginPath();ctx.moveTo(x,p.y-h*.28);ctx.lineTo(x,p.y+h*(.60+1.45*speedFrac));ctx.stroke();
         }
         ctx.fillStyle='#f1e7d0';ctx.fillRect(x-w/2,p.y-h,w,h);
         ctx.fillStyle='#d64f50';ctx.fillRect(x-w/2,p.y-h,w,h*.27);
       }
     }
 
-    const streakSpacing=34;
+    // Dense near-field verge marks are almost invisible at low speed but become
+    // long optical-flow streaks when travelling flat out.
+    const streakSpacing=24;
     let z3=Math.ceil(distance/streakSpacing)*streakSpacing;
-    for(;z3<distance+Math.min(DRAW_DIST,520);z3+=streakSpacing){
+    for(;z3<distance+Math.min(DRAW_DIST,470);z3+=streakSpacing){
       const p=pointAtDistance(z3-distance);
-      if(p.p<.28)continue;
+      if(p.p<.22)continue;
       const index=Math.floor(z3/streakSpacing);
       for(const side of [-1,1]){
-        const x=p.x+side*p.width*(.76+(index%3)*.055);
-        const len=lerp(1,17,p.p)*(.45+1.7*speedFrac);
-        ctx.strokeStyle=`rgba(126,175,118,${.18+.20*p.p})`;
-        ctx.lineWidth=Math.max(1,p.p*2.2);
-        ctx.beginPath();ctx.moveTo(x,p.y-len*.15);ctx.lineTo(x,p.y+len);ctx.stroke();
+        const x=p.x+side*p.width*(.74+(index%4)*.045);
+        const len=lerp(1,24,p.p)*(.30+2.8*speedFrac);
+        ctx.strokeStyle=`rgba(126,175,118,${.14+.30*p.p})`;
+        ctx.lineWidth=Math.max(1,p.p*2.4);
+        ctx.beginPath();ctx.moveTo(x,p.y-len*.08);ctx.lineTo(x,p.y+len);ctx.stroke();
       }
     }
 
@@ -461,7 +456,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     const frac=clamp(timeLeft/MAX_TIME,0,1);
     const barW=clamp(W*.48,190,340),barH=7;
     const x=W*.5-barW*.5,y=12;
-    const urgent=timeLeft<3;
+    const urgent=timeLeft<2.5;
     const pulse=.72+.28*Math.sin(performance.now()*.020);
 
     ctx.fillStyle='rgba(3,7,14,.42)';ctx.fillRect(x-3,y-3,barW+6,barH+6);
@@ -475,7 +470,6 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
     ctx.fillStyle=urgent?`rgba(255,255,255,${pulse})`:'rgba(255,255,255,.88)';
     ctx.fillText(`TIME ${Math.ceil(timeLeft)}`,W*.5,y+12);
 
-    // Score is always visible during play, like the original arcade HUD.
     ctx.textAlign='right';
     ctx.fillStyle='rgba(255,255,255,.90)';
     ctx.fillText(`SCORE ${Math.floor(score).toString().padStart(6,'0')}`,W-12,11);
@@ -515,7 +509,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 
   function draw(){
     ctx.save();
-    const speedShake=started&&!gameOver?clamp((speed-210)/95,0,1)*1.15:0;
+    const speedShake=started&&!gameOver?clamp((speed-185)/110,0,1)*1.8:0;
     if(shake>0||speedShake>0){const s=shake+speedShake;ctx.translate((Math.random()-.5)*s,(Math.random()-.5)*s);}
     drawBackground();drawRoad();drawCar();drawTimer();drawOverlay();
     ctx.restore();
